@@ -15,6 +15,7 @@ import { TeamUsagePage } from '@/components/team/TeamUsagePage'
 import { KnowledgePage } from '@/components/knowledge/KnowledgePage'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { CommunityModal } from '@/components/community/CommunityModal'
+import { OnboardingModal } from '@/components/onboarding/OnboardingModal'
 import { UpdateBanner } from '@/components/update/UpdateBanner'
 import { LocalEngineUpdateModal } from '@/components/engine/LocalEngineUpdateModal'
 import { SshPromptDialog } from '@/components/settings/SshPromptDialog'
@@ -290,6 +291,7 @@ export function AppLayout() {
       <KnowledgePage />
       {promotion && <CreateProjectDialog key={promotion.chatId} promotion={promotion} onClose={closePromotion} />}
       <CommunityModal />
+      <OnboardingModal />
       <FeedbackDialog />
     </div>
   )

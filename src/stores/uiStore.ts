@@ -106,6 +106,7 @@ interface UiState {
   teamUsageOpen: boolean
   knowledgeOpen: boolean
   communityOpen: boolean
+  onboardingOpen: boolean
   // Set by useUpdateCheck when the main process detects a newer GitHub
   // release. Cleared by "Skip this version" / "Later". Transient — never
   // persisted; main process is the source of truth on every boot.
@@ -142,6 +143,8 @@ interface UiState {
   closeKnowledge: () => void
   openCommunity: () => void
   closeCommunity: () => void
+  openOnboarding: () => void
+  closeOnboarding: () => void
   setAvailableUpdate: (info: UpdateInfo | null) => void
   dismissUpdateBanner: () => void
   resetUpdateBannerDismissed: () => void
@@ -173,6 +176,7 @@ export const useUiStore = create<UiState>((set) => ({
   teamUsageOpen: false,
   knowledgeOpen: false,
   communityOpen: false,
+  onboardingOpen: false,
   availableUpdate: null,
   updateBannerDismissed: false,
   systemMessages: [],
@@ -230,6 +234,8 @@ export const useUiStore = create<UiState>((set) => ({
   closeKnowledge: () => set({ knowledgeOpen: false }),
   openCommunity: () => set({ communityOpen: true }),
   closeCommunity: () => set({ communityOpen: false }),
+  openOnboarding: () => set({ onboardingOpen: true }),
+  closeOnboarding: () => set({ onboardingOpen: false }),
   setAvailableUpdate: (info) => set({ availableUpdate: info, updateBannerDismissed: false }),
   dismissUpdateBanner: () => set({ updateBannerDismissed: true }),
   resetUpdateBannerDismissed: () => set({ updateBannerDismissed: false }),
