@@ -346,7 +346,7 @@ describe('projectStore runtime preferences', () => {
     expect(useProjectStore.getState().tasks).toEqual([])
     expect(useProjectStore.getState().selectedTaskId).toBeNull()
     expect(useProjectStore.getState().selectedExpId).toBeNull()
-    expect(useProjectStore.getState().activeStage).toBe('research')
+    expect(useProjectStore.getState().activeStage).toBe('modules')
     expect(useProjectStore.getState().stats).toEqual({
       experiments: 0,
       completed: 0,

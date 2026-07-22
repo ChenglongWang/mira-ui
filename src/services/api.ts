@@ -306,9 +306,10 @@ export async function updateProjectRuntimePreferences(
   }
 }
 
-export async function fetchSessionHistory(sessionId: string): Promise<LogEntry[]> {
+export async function fetchSessionHistory(sessionId: string, workflowRunId?: string): Promise<LogEntry[]> {
   try {
-    const resp = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/history`)
+    const query = workflowRunId ? `?workflow_run_id=${encodeURIComponent(workflowRunId)}` : ''
+    const resp = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/history${query}`)
     if (!resp.ok) return []
     const data = await resp.json()
     return Array.isArray(data?.entries) ? (data.entries as LogEntry[]) : []
@@ -534,4 +535,104 @@ export async function uninstallSkillPlugin(sessionId: string, pluginId: string):
   }
   const data = await resp.json()
   return Array.isArray(data?.plugins) ? (data.plugins as SkillPlugin[]) : []
+}
+
+/* Modular workflow v1 */
+
+export async function fetchWorkflowSnapshot(projectId: string): Promise<import('@/types').WorkflowSnapshot> {
+  const response = await fetch(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}`)
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as import('@/types').WorkflowSnapshot
+}
+
+export async function createWorkflowRun(
+  projectId: string,
+  payload: {
+    moduleType: import('@/types').WorkflowModuleType
+    label?: string
+    moduleData?: Record<string, unknown>
+    inputs?: Array<{ artifact_id: string }>
+    enqueue?: boolean
+  },
+): Promise<{ run_id: string; project_sequence: number }> {
+  const response = await fetch(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command_id: crypto.randomUUID(),
+      module_type: payload.moduleType,
+      label: payload.label,
+      module_data: payload.moduleData,
+      inputs: payload.inputs,
+      enqueue: payload.enqueue ?? false,
+    }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as { run_id: string; project_sequence: number }
+}
+
+export async function importWorkflowArtifact(
+  projectId: string,
+  sourcePath: string,
+  artifactType = 'file',
+): Promise<import('@/types').WorkflowArtifact> {
+  const response = await fetch(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command_id: crypto.randomUUID(),
+      source_path: sourcePath,
+      artifact_type: artifactType,
+    }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  const payload = await response.json() as { artifact: import('@/types').WorkflowArtifact }
+  return payload.artifact
+}
+
+export async function commandWorkflowRun(
+  projectId: string,
+  runId: string,
+  commandType: string,
+  revision: number,
+  payload?: Record<string, unknown>,
+): Promise<{ project_sequence: number }> {
+  const response = await fetch(
+    `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/commands`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command_id: crypto.randomUUID(),
+        command_type: commandType,
+        expected_revision: revision,
+        payload: payload ?? {},
+      }),
+    },
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as { project_sequence: number }
+}
+
+export async function commandWorkflowProject(
+  projectId: string,
+  commandType: string,
+  revision: number,
+  payload?: Record<string, unknown>,
+): Promise<{ project_sequence: number }> {
+  const response = await fetch(
+    `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/commands`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command_id: crypto.randomUUID(),
+        command_type: commandType,
+        expected_revision: revision,
+        payload: payload ?? {},
+      }),
+    },
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as { project_sequence: number }
 }

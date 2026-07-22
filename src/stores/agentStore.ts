@@ -220,6 +220,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
   handleWsMessage: (msg) => {
     const sessionId = msg.session_id ?? '_unknown'
+    const workflowRunId = readMetadataString(msg.metadata, 'workflow_run_id')
+    const logSessionId = workflowRunId ? `${sessionId}:run:${workflowRunId}` : sessionId
 
     if (msg.type === 'stop_ack') {
       set((state) => {
@@ -249,7 +251,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     if (msg.type === 'stream_delta') {
       if (!msg.content) return
       set((state) => {
-        const list = state.logsByProject[sessionId] ?? []
+        const list = state.logsByProject[logSessionId] ?? []
         const last = list[list.length - 1]
         let nextList: LogEntry[]
         if (last && last.type === 'response' && last.metadata?._streaming) {
@@ -267,8 +269,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
           ]
         }
         return {
-          logsByProject: { ...state.logsByProject, [sessionId]: nextList },
-          streamingBySession: setSessionStreaming(state.streamingBySession, sessionId, true),
+          logsByProject: { ...state.logsByProject, [logSessionId]: nextList },
+          streamingBySession: setSessionStreaming(state.streamingBySession, logSessionId, true),
         }
       })
       return
@@ -276,12 +278,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
 
     if (msg.type === 'stream_end') {
       set((state) => {
-        const list = state.logsByProject[sessionId]
+        const list = state.logsByProject[logSessionId]
         let nextLogs = state.logsByProject
         if (list && list.some((e) => e.metadata?._streaming)) {
           nextLogs = {
             ...state.logsByProject,
-            [sessionId]: list.map((e) => {
+            [logSessionId]: list.map((e) => {
               if (!e.metadata?._streaming) return e
               const meta = { ...e.metadata }
               delete meta._streaming
@@ -291,7 +293,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         }
         return {
           logsByProject: nextLogs,
-          streamingBySession: setSessionStreaming(state.streamingBySession, sessionId, false),
+          streamingBySession: setSessionStreaming(state.streamingBySession, logSessionId, false),
         }
       })
       return
@@ -316,12 +318,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set((state) => {
       const streaming = (msg.type === 'progress' && !terminalProgress) || msg.type === 'tool_call'
       const next: Partial<AgentState> = {
-        streamingBySession: setSessionStreaming(state.streamingBySession, sessionId, streaming),
+        streamingBySession: setSessionStreaming(state.streamingBySession, logSessionId, streaming),
       }
       if (!statusOnly) {
         next.logsByProject = {
           ...state.logsByProject,
-          [sessionId]: [...(state.logsByProject[sessionId] ?? []), entry],
+          [logSessionId]: [...(state.logsByProject[logSessionId] ?? []), entry],
         }
       }
       if (usageUpdate) {

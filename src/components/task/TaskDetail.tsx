@@ -7,6 +7,7 @@ import { ResearchView } from '../stages/ResearchView'
 import { ResultView } from '../stages/ResultView'
 import { PlanView } from '../stages/PlanView'
 import { t } from '@/i18n'
+import { WorkflowWorkspace } from '@/components/workflow/WorkflowWorkspace'
 
 export function TaskDetail() {
   const { tasks, selectedTaskId, selectedExpId, activeStage } = useProjectStore()
@@ -19,6 +20,10 @@ export function TaskDetail() {
         {t('selectProjectToStart', lang)}
       </div>
     )
+  }
+
+  if (activeStage === 'modules') {
+    return <WorkflowWorkspace />
   }
 
   if (activeStage === 'research') {

@@ -14,6 +14,7 @@ import {
   updateProjectRuntimePreferences,
 } from '@/services/api'
 import { wsClient } from '@/services/websocket'
+import { useWorkflowStore } from '@/stores/workflowStore'
 
 async function clearAgentLogs(projectId: string): Promise<void> {
   try {
@@ -378,7 +379,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   appMode: 'project',
   selectedTaskId: null,
   selectedExpId: null,
-  activeStage: 'research',
+  activeStage: 'modules',
   agentProfile: 'research',
   contractVersion: 1,
   mode: 'auto',
@@ -392,7 +393,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
         appMode,
         selectedTaskId: null,
         selectedExpId: null,
-        activeStage: 'research',
+        activeStage: 'modules',
       })
       return
     }
@@ -406,7 +407,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       appMode: 'project',
       selectedTaskId: id,
       selectedExpId: activeExp,
-      activeStage: 'research',
+      activeStage: 'modules',
       mode: normalizeRunMode(task?.runMode, get().mode),
       agentProfile: normalizeAgentProfile(task?.agentProfile, get().agentProfile),
       contractVersion: normalizeContractVersion(task?.contractVersion, get().contractVersion),
@@ -484,6 +485,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   deleteTask: async (id, deleteFiles = false) => {
     await deleteProject(id, { deleteFiles })
     await clearAgentLogs(id)
+    useWorkflowStore.getState().removeProject(id)
     const { tasks, selectedTaskId } = get()
     const filtered = tasks.filter((t) => t.id !== id)
     const nextSelectedTaskId = selectedTaskId === id ? (filtered[0]?.id ?? null) : selectedTaskId
@@ -523,11 +525,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   },
 
   resetWorkspaceState: () => {
+    useWorkflowStore.getState().clear()
     set({
       tasks: [],
       selectedTaskId: null,
       selectedExpId: null,
-      activeStage: 'research',
+      activeStage: 'modules',
       stats: { experiments: 0, completed: 0, failed: 0, running: 0 },
       projectsLoaded: false,
       contractsByTask: {},
@@ -585,6 +588,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       appMode: 'project',
       selectedTaskId: id,
       selectedExpId: null,
+      activeStage: 'modules',
       mode,
       agentProfile,
       contractVersion,

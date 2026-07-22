@@ -18,6 +18,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useFeedbackStore } from '@/stores/feedbackStore'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useUpdateCheck } from '@/hooks/useUpdateCheck'
+import { useWorkflowWebSocket } from '@/hooks/useWorkflowWebSocket'
 import { cn } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { t } from '@/i18n'
@@ -144,6 +145,7 @@ export function AppLayout() {
   const [resizing, setResizing] = useState(false)
   const flushPendingFeedback = useFeedbackStore((s) => s.flushPending)
   useWebSocket()
+  useWorkflowWebSocket()
   useUpdateCheck()
 
   useEffect(() => {
