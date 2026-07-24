@@ -60,10 +60,25 @@ describe('workflowStore', () => {
 
   it('creates a direct-entry module run and refreshes', async () => {
     vi.mocked(createWorkflowRun).mockResolvedValue({ run_id: 'run-2', project_sequence: 3 })
-    const runId = await useWorkflowStore.getState().createRun('PRJ-1', 'experiment', 'own spec')
+    const runId = await useWorkflowStore.getState().createRun(
+      'PRJ-1',
+      'experiment',
+      'own spec',
+      {
+        enqueue: true,
+        moduleData: {
+          automation_policy: { logic: 'AND', goals: [], maxExperiments: 4 },
+        },
+      },
+    )
     expect(runId).toBe('run-2')
     expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', {
-      moduleType: 'experiment', moduleData: { intent: 'own spec' },
+      moduleType: 'experiment',
+      moduleData: {
+        automation_policy: { logic: 'AND', goals: [], maxExperiments: 4 },
+        intent: 'own spec',
+      },
+      enqueue: true,
     })
   })
 

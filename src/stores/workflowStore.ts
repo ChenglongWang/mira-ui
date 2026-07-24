@@ -14,7 +14,12 @@ interface WorkflowState {
     projectId: string,
     moduleType: WorkflowModuleType,
     intent?: string,
-    options?: { inputArtifactIds?: string[]; parentRunId?: string },
+    options?: {
+      inputArtifactIds?: string[]
+      parentRunId?: string
+      enqueue?: boolean
+      moduleData?: Record<string, unknown>
+    },
   ) => Promise<string>
   commandRun: (projectId: string, runId: string, commandType: string, payload?: Record<string, unknown>) => Promise<void>
   setHandoffMode: (projectId: string, mode: 'manual' | 'auto') => Promise<void>
@@ -71,10 +76,12 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const receipt = await createWorkflowRun(projectId, {
       moduleType,
       moduleData: {
+        ...options?.moduleData,
         ...(intent?.trim() ? { intent: intent.trim() } : {}),
         ...(options?.parentRunId ? { parent_run_id: options.parentRunId } : {}),
       },
       inputs: options?.inputArtifactIds?.map((artifact_id) => ({ artifact_id })),
+      enqueue: options?.enqueue,
     })
     set((state) => ({
       selectedRunByProject: { ...state.selectedRunByProject, [projectId]: receipt.run_id },

@@ -4,7 +4,18 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useWorkflowStore } from '@/stores/workflowStore'
 import { useAgentStore } from '@/stores/agentStore'
-import type { WorkflowInteraction, WorkflowModuleType, WorkflowRun, WorkflowRunStatus } from '@/types'
+import { useUiStore } from '@/stores/uiStore'
+import type {
+  AutomationGoal,
+  AutomationGoalLogic,
+  AutomationGoalOperator,
+  LiteratureSource,
+  PipelineStage,
+  WorkflowInteraction,
+  WorkflowModuleType,
+  WorkflowRun,
+  WorkflowRunStatus,
+} from '@/types'
 import { cn } from '@/lib/utils'
 import { importWorkflowArtifact } from '@/services/api'
 import { wsClient } from '@/services/websocket'
@@ -23,11 +34,6 @@ const MODULES: Array<{
     zhDescription: '调研文献、澄清问题并提出可选择的研究方向。',
   },
   {
-    type: 'planning', icon: '🗺️', en: 'Planning', zh: '交互式规划',
-    enDescription: 'Turn a direction into an approved, testable plan with the AI.',
-    zhDescription: '与 AI 交互确认，把已有方向变成可执行计划。',
-  },
-  {
     type: 'experiment', icon: '🔬', en: 'Experiment', zh: '实验',
     enDescription: 'Start directly from your own specification, data, or code.',
     zhDescription: '可跳过前序模块，直接从已有方案、数据或代码开始。',
@@ -38,6 +44,72 @@ const MODULES: Array<{
     zhDescription: '基于已有材料直接写作、润色、分析或整理交付物。',
   },
 ]
+
+const GOAL_OPERATORS: AutomationGoalOperator[] = ['>', '>=', '<', '<=', '==']
+const LITERATURE_SOURCE_OPTIONS: Array<{ key: LiteratureSource; label: string }> = [
+  { key: 'pubmed', label: 'PubMed' },
+  { key: 'google_scholar', label: 'Google Scholar' },
+  { key: 'arxiv', label: 'arXiv' },
+  { key: 'semantic_scholar', label: 'Semantic Scholar' },
+  { key: 'crossref', label: 'Crossref' },
+  { key: 'europe_pmc', label: 'Europe PMC' },
+]
+const DEFAULT_LITERATURE_SOURCES = LITERATURE_SOURCE_OPTIONS.map((source) => source.key)
+
+function detectPromptLanguage(text: string, fallback: 'zh' | 'en'): 'zh' | 'en' {
+  const hanCount = (text.match(/[\u3400-\u9fff]/g) ?? []).length
+  const latinCount = (text.match(/[A-Za-z]/g) ?? []).length
+  if (hanCount === 0 && latinCount === 0) return fallback
+  return hanCount > 0 && hanCount * 2 >= latinCount ? 'zh' : 'en'
+}
+
+function buildModuleStartPrompt(
+  moduleType: WorkflowModuleType,
+  intent: string,
+  moduleData: Record<string, unknown>,
+  lang: 'zh' | 'en',
+): string {
+  if (moduleType !== 'initiation') return intent
+  const literature = moduleData.literature_review as {
+    enabled?: boolean
+    sources?: LiteratureSource[]
+  } | undefined
+  const enabled = literature?.enabled !== false
+  const sources = (literature?.sources ?? []).map(
+    (key) => LITERATURE_SOURCE_OPTIONS.find((source) => source.key === key)?.label ?? key,
+  )
+  const references = typeof moduleData.references === 'string' ? moduleData.references : ''
+  if (lang === 'zh') {
+    return [
+      '请执行本次立项与文献调研。',
+      '',
+      '## 本次目标',
+      intent,
+      '',
+      '## 文献调研配置',
+      `- 外部文献调研：${enabled ? '启用' : '停用'}`,
+      `- 指定来源：${enabled ? (sources.join('、') || '未指定') : '不使用外部来源'}`,
+      references ? `- 用户参考文献：\n${references}` : '- 用户参考文献：无',
+      '',
+      '请严格按照以上配置执行。调研内容需要保留标题、作者、年份、来源、URL/DOI、摘要、相关性、冲突证据、研究空白和候选方向，并提交到模块的结构化研究结果中，以便在中间工作区按文献卡片审计。',
+      '除非用户明确要求其他语言，否则检索进度、结构化调研结果和最终回复均使用中文。',
+    ].join('\n')
+  }
+  return [
+    'Run this initiation and literature-research module.',
+    '',
+    '## Run goal',
+    intent,
+    '',
+    '## Literature research configuration',
+    `- External literature research: ${enabled ? 'enabled' : 'disabled'}`,
+    `- Selected sources: ${enabled ? (sources.join(', ') || 'none selected') : 'no external sources'}`,
+    references ? `- User references:\n${references}` : '- User references: none',
+    '',
+    'Follow this configuration exactly. Preserve title, authors, year, source, URL/DOI, summary, relevance, conflicting evidence, research gaps, and candidate directions in the module’s structured research result so the center workspace can render auditable reference cards.',
+    'Respond in English unless the user explicitly requests another language.',
+  ].join('\n')
+}
 
 const STATUS_STYLE: Record<WorkflowRunStatus, string> = {
   created: 'text-[var(--color-text-muted)] bg-[var(--color-bg-tertiary)]',
@@ -55,9 +127,15 @@ function moduleMeta(type: WorkflowModuleType) {
 }
 
 const NEXT_MODULE: Partial<Record<WorkflowModuleType, WorkflowModuleType>> = {
-  initiation: 'planning',
-  planning: 'experiment',
+  initiation: 'experiment',
   experiment: 'delivery',
+}
+
+const MODULE_STAGE: Record<WorkflowModuleType, PipelineStage> = {
+  initiation: 'research',
+  planning: 'plan',
+  experiment: 'experiment',
+  delivery: 'result',
 }
 
 function InteractionPanel({ projectId, run }: { projectId: string; run: WorkflowRun }) {
@@ -181,7 +259,15 @@ function InteractionPanel({ projectId, run }: { projectId: string; run: Workflow
   )
 }
 
-function RunControls({ projectId, run }: { projectId: string; run: WorkflowRun }) {
+function RunControls({
+  projectId,
+  run,
+  onStartRun,
+}: {
+  projectId: string
+  run: WorkflowRun
+  onStartRun: (run: WorkflowRun) => Promise<void>
+}) {
   const commandRun = useWorkflowStore((state) => state.commandRun)
   const [pending, setPending] = useState(false)
   const [outputPath, setOutputPath] = useState('')
@@ -189,8 +275,9 @@ function RunControls({ projectId, run }: { projectId: string; run: WorkflowRun }
   const lang = useSettingsStore((state) => state.language)
   const handoffMode = useWorkflowStore((state) => state.snapshots[projectId]?.workflow.handoff_policy.mode)
   const actions: Array<{ command: string; en: string; zh: string }> = []
-  if (run.status === 'created') actions.push({ command: 'enqueue', en: 'Start', zh: '开始' })
-  if (run.status === 'queued' || run.status === 'running' || run.status === 'waiting_input') {
+  if (run.status === 'created') actions.push({ command: 'start_run', en: 'Start', zh: '开始' })
+  if (run.status === 'queued') actions.push({ command: 'run_now', en: 'Run now', zh: '立即执行' })
+  if (run.status === 'running' || run.status === 'waiting_input') {
     actions.push({ command: 'pause', en: 'Pause', zh: '暂停' })
   }
   if (run.status === 'paused') actions.push({ command: 'resume', en: 'Resume', zh: '继续' })
@@ -221,7 +308,12 @@ function RunControls({ projectId, run }: { projectId: string; run: WorkflowRun }
             setPending(true)
             setError(null)
             void (async () => {
-              if (action.command === 'complete') {
+              if (action.command === 'start_run') {
+                await commandRun(projectId, run.run_id, 'enqueue')
+                await onStartRun(run)
+              } else if (action.command === 'run_now') {
+                await onStartRun(run)
+              } else if (action.command === 'complete') {
                 const outputs = outputPath.trim()
                   ? [(await importWorkflowArtifact(projectId, outputPath.trim())).artifact_id]
                   : []
@@ -253,7 +345,13 @@ function RunControls({ projectId, run }: { projectId: string; run: WorkflowRun }
 export function WorkflowWorkspace() {
   const projectId = useProjectStore((state) => state.selectedTaskId)
   const task = useProjectStore((state) => state.tasks.find((item) => item.id === state.selectedTaskId))
+  const mode = useProjectStore((state) => state.mode)
+  const agentProfile = useProjectStore((state) => state.agentProfile)
+  const setActiveStage = useProjectStore((state) => state.setActiveStage)
   const lang = useSettingsStore((state) => state.language)
+  const streamResponses = useSettingsStore((state) => state.streamResponses)
+  const connected = useAgentStore((state) => state.connected)
+  const setAgentPanelCollapsed = useUiStore((state) => state.setAgentPanelCollapsed)
   const snapshot = useWorkflowStore((state) => projectId ? state.snapshots[projectId] : undefined)
   const loading = useWorkflowStore((state) => projectId ? state.loadingByProject[projectId] : false)
   const error = useWorkflowStore((state) => projectId ? state.errorByProject[projectId] : null)
@@ -264,12 +362,224 @@ export function WorkflowWorkspace() {
   const setHandoffMode = useWorkflowStore((state) => state.setHandoffMode)
   const [creating, setCreating] = useState<WorkflowModuleType | null>(null)
   const [policyPending, setPolicyPending] = useState(false)
+  const [startingModule, setStartingModule] = useState<WorkflowModuleType | null>(null)
+  const [continuationSource, setContinuationSource] = useState<{
+    parentRunId: string
+    inputArtifactIds: string[]
+  } | null>(null)
+  const [runIntent, setRunIntent] = useState('')
+  const [literatureResearchEnabled, setLiteratureResearchEnabled] = useState(true)
+  const [selectedLiteratureSources, setSelectedLiteratureSources] = useState<LiteratureSource[]>(
+    DEFAULT_LITERATURE_SOURCES,
+  )
+  const [references, setReferences] = useState('')
+  const [goalLogic, setGoalLogic] = useState<AutomationGoalLogic>('AND')
+  const [goals, setGoals] = useState<AutomationGoal[]>([])
+  const [goalValueInputs, setGoalValueInputs] = useState<string[]>([])
+  const [maxExperiments, setMaxExperiments] = useState('')
+  const [maxTokens, setMaxTokens] = useState('')
+  const [startError, setStartError] = useState<string | null>(null)
   const selectedRun = useMemo(
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId) ?? null,
     [selectedRunId, snapshot?.runs],
   )
-
   if (!projectId) return null
+
+  const beginModule = (moduleType: WorkflowModuleType, sourceRun?: WorkflowRun) => {
+    setStartingModule(moduleType)
+    setContinuationSource(sourceRun
+      ? { parentRunId: sourceRun.run_id, inputArtifactIds: sourceRun.outputs }
+      : null)
+    const continuationIntent = lang === 'zh'
+      ? `基于上游模块结果继续${moduleMeta(moduleType).zh}。`
+      : `Continue with ${moduleMeta(moduleType).en.toLowerCase()} using the upstream module results.`
+    setRunIntent(sourceRun ? continuationIntent : (task?.coreQuestion?.trim() ?? ''))
+    setLiteratureResearchEnabled(true)
+    setSelectedLiteratureSources(DEFAULT_LITERATURE_SOURCES)
+    setReferences('')
+    setGoalLogic('AND')
+    setGoals([])
+    setGoalValueInputs([])
+    setMaxExperiments('')
+    setMaxTokens('')
+    setStartError(null)
+  }
+
+  const startExistingRun = async (run: WorkflowRun) => {
+    if (!connected || !wsClient.connected) {
+      throw new Error(
+        lang === 'zh'
+          ? 'Agent 对话尚未连接，暂时无法启动模块。请等待连接后重试。'
+          : 'Agent chat is not connected yet. Wait for the connection, then try again.',
+      )
+    }
+    const configuredIntent = typeof run.module_data.intent === 'string'
+      ? run.module_data.intent.trim()
+      : ''
+    const intent = configuredIntent || (
+      lang === 'zh'
+        ? `基于已继承的上游产物开始${moduleMeta(run.module_type).zh}。`
+        : `Start ${moduleMeta(run.module_type).en.toLowerCase()} using the inherited upstream artifacts.`
+    )
+    const promptLanguage = detectPromptLanguage(intent, lang)
+    const startPrompt = buildModuleStartPrompt(
+      run.module_type,
+      intent,
+      run.module_data,
+      promptLanguage,
+    )
+    const conversationId = `${projectId}:run:${run.run_id}`
+    useAgentStore.getState().addLog(conversationId, {
+      id: `module-start-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      content: startPrompt,
+      type: 'response',
+      metadata: {
+        _user: true,
+        workflow_run_id: run.run_id,
+        workflow_module_type: run.module_type,
+      },
+    })
+    useAgentStore.getState().markSessionPending(conversationId)
+    setAgentPanelCollapsed(false)
+    setActiveStage(MODULE_STAGE[run.module_type])
+    wsClient.send({
+      type: 'message',
+      content: startPrompt,
+      session_id: projectId,
+      user_id: 'ui_user',
+      loop_mode: 'project',
+      stream: streamResponses,
+      mode,
+      agent_profile: agentProfile,
+      workflow_run_id: run.run_id,
+      workflow_module_type: run.module_type,
+    })
+  }
+
+  const startModuleRun = async () => {
+    if (!startingModule) return
+    const intent = runIntent.trim()
+    if (!intent) {
+      setStartError(lang === 'zh' ? '请先填写本次运行的目标。' : 'Describe the goal for this run.')
+      return
+    }
+
+    const moduleData: Record<string, unknown> = {}
+    if (startingModule === 'initiation') {
+      if (literatureResearchEnabled && selectedLiteratureSources.length === 0) {
+        setStartError(
+          lang === 'zh'
+            ? '启用外部文献调研时，请至少选择一个文献来源。'
+            : 'Choose at least one literature source when external research is enabled.',
+        )
+        return
+      }
+      moduleData.literature_review = {
+        enabled: literatureResearchEnabled,
+        sources: selectedLiteratureSources,
+      }
+      if (references.trim()) moduleData.references = references.trim()
+    }
+    if (startingModule === 'experiment') {
+      const normalizedGoals: AutomationGoal[] = []
+      for (let index = 0; index < goals.length; index += 1) {
+        const metric = goals[index].metric.trim()
+        const rawValue = goalValueInputs[index]?.trim() ?? ''
+        if (!metric && !rawValue) continue
+        const value = Number(rawValue)
+        if (!metric || !rawValue || !Number.isFinite(value)) {
+          setStartError(
+            lang === 'zh'
+              ? '请完整填写每个停止条件的指标和值。'
+              : 'Complete both the metric and value for every stopping condition.',
+          )
+          return
+        }
+        normalizedGoals.push({ ...goals[index], metric, value })
+      }
+      const parsePositiveInteger = (raw: string, label: string) => {
+        if (!raw.trim()) return undefined
+        const value = Number(raw)
+        if (!Number.isInteger(value) || value <= 0) throw new Error(label)
+        return value
+      }
+      try {
+        const maxExperimentsValue = parsePositiveInteger(
+          maxExperiments,
+          lang === 'zh' ? '实验最大次数必须是正整数。' : 'Maximum experiments must be a positive integer.',
+        )
+        const maxTokensValue = parsePositiveInteger(
+          maxTokens,
+          lang === 'zh' ? 'Token 上限必须是正整数。' : 'Token limit must be a positive integer.',
+        )
+        moduleData.automation_policy = {
+          logic: goalLogic,
+          goals: normalizedGoals,
+          ...(maxExperimentsValue ? { maxExperiments: maxExperimentsValue } : {}),
+          ...(maxTokensValue ? { maxTokens: maxTokensValue } : {}),
+        }
+      } catch (reason) {
+        setStartError(reason instanceof Error ? reason.message : String(reason))
+        return
+      }
+    }
+    if (!connected || !wsClient.connected) {
+      setStartError(
+        lang === 'zh'
+          ? 'Agent 对话尚未连接，暂时无法启动模块。请等待连接后重试。'
+          : 'Agent chat is not connected yet. Wait for the connection, then try again.',
+      )
+      return
+    }
+
+    const moduleType = startingModule
+    setCreating(moduleType)
+    setStartError(null)
+    try {
+      const runId = await createRun(projectId, moduleType, intent, {
+        enqueue: true,
+        moduleData,
+        inputArtifactIds: continuationSource?.inputArtifactIds,
+        parentRunId: continuationSource?.parentRunId,
+      })
+      const conversationId = `${projectId}:run:${runId}`
+      const promptLanguage = detectPromptLanguage(
+        `${intent}\n${typeof moduleData.references === 'string' ? moduleData.references : ''}`,
+        lang,
+      )
+      const startPrompt = buildModuleStartPrompt(moduleType, intent, moduleData, promptLanguage)
+      useAgentStore.getState().addLog(conversationId, {
+        id: `module-start-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        content: startPrompt,
+        type: 'response',
+        metadata: { _user: true, workflow_run_id: runId, workflow_module_type: moduleType },
+      })
+      useAgentStore.getState().markSessionPending(conversationId)
+      setAgentPanelCollapsed(false)
+      setActiveStage(MODULE_STAGE[moduleType])
+      wsClient.send({
+        type: 'message',
+        content: startPrompt,
+        session_id: projectId,
+        user_id: 'ui_user',
+        loop_mode: 'project',
+        stream: streamResponses,
+        mode,
+        agent_profile: agentProfile,
+        workflow_run_id: runId,
+        workflow_module_type: moduleType,
+      })
+      setStartingModule(null)
+      setContinuationSource(null)
+      setRunIntent('')
+    } catch (reason) {
+      setStartError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCreating(null)
+    }
+  }
 
   return (
     <div className="h-full overflow-y-auto bg-[var(--color-bg-primary)]">
@@ -311,11 +621,7 @@ export function WorkflowWorkspace() {
               key={module.type}
               type="button"
               disabled={creating !== null || snapshot?.workflow.status === 'archived'}
-              onClick={() => {
-                setCreating(module.type)
-                void createRun(projectId, module.type, task?.coreQuestion)
-                  .finally(() => setCreating(null))
-              }}
+              onClick={() => beginModule(module.type)}
               className="min-h-40 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4 text-left transition hover:border-[var(--color-accent)]/60 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
             >
               <div className="text-2xl">{module.icon}</div>
@@ -326,13 +632,292 @@ export function WorkflowWorkspace() {
                 {lang === 'zh' ? module.zhDescription : module.enDescription}
               </div>
               <div className="mt-3 text-xs font-medium text-[var(--color-accent)]">
-                {creating === module.type
-                  ? (lang === 'zh' ? '创建中…' : 'Creating…')
-                  : (lang === 'zh' ? '新建运行 →' : 'New run →')}
+                {lang === 'zh' ? '启动模块 →' : 'Start module →'}
               </div>
             </button>
           ))}
         </div>
+
+        {startingModule && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="module-start-title"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget && creating === null) {
+                setStartingModule(null)
+                setContinuationSource(null)
+              }
+            }}
+          >
+            <div className="max-h-[calc(100vh-2rem)] w-full max-w-2xl overflow-y-auto rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-5 shadow-2xl">
+              <div className="flex items-start gap-3">
+                <div className="text-2xl">{moduleMeta(startingModule).icon}</div>
+                <div className="min-w-0 flex-1">
+                  <h3 id="module-start-title" className="text-base font-semibold text-[var(--color-text-primary)]">
+                    {lang === 'zh'
+                      ? `启动${moduleMeta(startingModule).zh}`
+                      : `Start ${moduleMeta(startingModule).en}`}
+                  </h3>
+                  <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
+                    {lang === 'zh'
+                      ? '说明这次运行希望 Mira 完成什么。确认后会立即创建 ModuleRun、进入模块工作页并开始执行。'
+                      : 'Describe what Mira should accomplish. Confirming creates the ModuleRun, opens its workspace, and starts execution immediately.'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label={lang === 'zh' ? '关闭' : 'Close'}
+                  disabled={creating !== null}
+                  onClick={() => {
+                    setStartingModule(null)
+                    setContinuationSource(null)
+                  }}
+                  className="rounded-md px-2 py-1 text-sm text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                >
+                  ×
+                </button>
+              </div>
+
+              <label className="mt-5 block text-xs font-medium text-[var(--color-text-secondary)]" htmlFor="module-run-intent">
+                {lang === 'zh' ? '本次运行目标' : 'Goal for this run'}
+              </label>
+              <textarea
+                id="module-run-intent"
+                autoFocus
+                value={runIntent}
+                disabled={creating !== null}
+                onChange={(event) => setRunIntent(event.target.value)}
+                placeholder={lang === 'zh' ? '例如：调研该方向近三年的关键论文，并提出三个可验证的研究方向。' : 'Example: Review the last three years of key papers and propose three testable directions.'}
+                className="mt-2 min-h-32 w-full resize-y rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60"
+              />
+
+              {continuationSource && (
+                <div className="mt-3 rounded-xl border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-3 text-xs text-[var(--color-text-secondary)]">
+                  <div className="font-medium text-[var(--color-accent)]">
+                    {lang === 'zh' ? '从上游结果创建新分支' : 'Create a new branch from upstream results'}
+                  </div>
+                  <div className="mt-1">
+                    {lang === 'zh'
+                      ? `将继承 ${continuationSource.inputArtifactIds.length} 个产物；确认后立即启动执行。`
+                      : `Inherits ${continuationSource.inputArtifactIds.length} artifact(s) and starts execution immediately after confirmation.`}
+                  </div>
+                </div>
+              )}
+
+              {startingModule === 'initiation' && (
+                <div className="mt-4 space-y-4">
+                  <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-4">
+                    <label className="flex items-start gap-2 text-xs font-medium text-[var(--color-text-secondary)]">
+                      <input
+                        type="checkbox"
+                        checked={literatureResearchEnabled}
+                        disabled={creating !== null}
+                        onChange={(event) => setLiteratureResearchEnabled(event.target.checked)}
+                        className="mt-0.5 accent-[var(--color-accent)]"
+                      />
+                      <span>
+                        {lang === 'zh' ? '启用外部文献调研' : 'Enable external literature research'}
+                        <span className="mt-0.5 block text-[11px] font-normal text-[var(--color-text-muted)]">
+                          {lang === 'zh'
+                            ? '关闭后 Mira 只使用你提供的参考文献和项目材料。'
+                            : 'When disabled, Mira only uses your references and project materials.'}
+                        </span>
+                      </span>
+                    </label>
+                    <div className={cn(
+                      'mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3',
+                      !literatureResearchEnabled && 'opacity-50',
+                    )}>
+                      {LITERATURE_SOURCE_OPTIONS.map((source) => (
+                        <label
+                          key={source.key}
+                          className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-2.5 py-2 text-xs text-[var(--color-text-secondary)]"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedLiteratureSources.includes(source.key)}
+                            disabled={creating !== null || !literatureResearchEnabled}
+                            onChange={() => setSelectedLiteratureSources((current) => (
+                              current.includes(source.key)
+                                ? current.filter((item) => item !== source.key)
+                                : [...current, source.key]
+                            ))}
+                            className="accent-[var(--color-accent)]"
+                          />
+                          {source.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[var(--color-text-secondary)]" htmlFor="module-run-references">
+                      {lang === 'zh' ? '用户参考文献' : 'Your references'}
+                    </label>
+                    <textarea
+                      id="module-run-references"
+                      value={references}
+                      disabled={creating !== null}
+                      onChange={(event) => setReferences(event.target.value)}
+                      placeholder={lang === 'zh'
+                        ? '输入 DOI、论文链接或引文；可每行一条。'
+                        : 'Enter DOIs, paper links, or citations; one per line is fine.'}
+                      className="mt-2 min-h-24 w-full resize-y rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {startingModule === 'experiment' && (
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between gap-3">
+                      <label className="text-xs font-medium text-[var(--color-text-secondary)]">
+                        {lang === 'zh' ? '停止条件' : 'Stopping conditions'}
+                      </label>
+                      <div className="flex gap-1">
+                        {(['AND', 'OR'] as AutomationGoalLogic[]).map((logic) => (
+                          <button
+                            key={logic}
+                            type="button"
+                            disabled={creating !== null}
+                            onClick={() => setGoalLogic(logic)}
+                            className={cn(
+                              'rounded-md border px-2 py-1 text-[11px] font-medium',
+                              goalLogic === logic
+                                ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+                                : 'border-[var(--color-border)] text-[var(--color-text-muted)]',
+                            )}
+                          >
+                            {logic}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {goals.map((goal, index) => (
+                        <div key={`module-goal-${index}`} className="grid grid-cols-[minmax(0,1fr)_70px_100px_auto] gap-2">
+                          <input
+                            aria-label={`${lang === 'zh' ? '停止指标' : 'Stopping metric'} ${index + 1}`}
+                            value={goal.metric}
+                            disabled={creating !== null}
+                            onChange={(event) => setGoals((current) => current.map((item, itemIndex) => (
+                              itemIndex === index ? { ...item, metric: event.target.value } : item
+                            )))}
+                            placeholder={lang === 'zh' ? '指标，如 accuracy' : 'Metric, e.g. accuracy'}
+                            className="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2.5 py-2 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
+                          />
+                          <select
+                            aria-label={`${lang === 'zh' ? '停止条件运算符' : 'Stopping operator'} ${index + 1}`}
+                            value={goal.operator}
+                            disabled={creating !== null}
+                            onChange={(event) => setGoals((current) => current.map((item, itemIndex) => (
+                              itemIndex === index
+                                ? { ...item, operator: event.target.value as AutomationGoalOperator }
+                                : item
+                            )))}
+                            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2 py-2 text-xs text-[var(--color-text-primary)] outline-none"
+                          >
+                            {GOAL_OPERATORS.map((operator) => <option key={operator}>{operator}</option>)}
+                          </select>
+                          <input
+                            aria-label={`${lang === 'zh' ? '停止目标值' : 'Stopping value'} ${index + 1}`}
+                            value={goalValueInputs[index] ?? ''}
+                            disabled={creating !== null}
+                            inputMode="decimal"
+                            onChange={(event) => setGoalValueInputs((current) => current.map((item, itemIndex) => (
+                              itemIndex === index ? event.target.value : item
+                            )))}
+                            placeholder={lang === 'zh' ? '目标值' : 'Value'}
+                            className="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2.5 py-2 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
+                          />
+                          <button
+                            type="button"
+                            aria-label={lang === 'zh' ? `删除停止条件 ${index + 1}` : `Remove stopping condition ${index + 1}`}
+                            disabled={creating !== null}
+                            onClick={() => {
+                              setGoals((current) => current.filter((_, itemIndex) => itemIndex !== index))
+                              setGoalValueInputs((current) => current.filter((_, itemIndex) => itemIndex !== index))
+                            }}
+                            className="rounded-lg border border-[var(--color-border)] px-2 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-bg-hover)]"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={creating !== null}
+                      onClick={() => {
+                        setGoals((current) => [...current, { metric: '', operator: '>', value: Number.NaN }])
+                        setGoalValueInputs((current) => [...current, ''])
+                      }}
+                      className="mt-2 rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+                    >
+                      {lang === 'zh' ? '+ 添加停止条件' : '+ Add stopping condition'}
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="text-xs font-medium text-[var(--color-text-secondary)]">
+                      {lang === 'zh' ? '实验最大次数' : 'Maximum experiments'}
+                      <input
+                        value={maxExperiments}
+                        disabled={creating !== null}
+                        inputMode="numeric"
+                        onChange={(event) => setMaxExperiments(event.target.value)}
+                        placeholder={lang === 'zh' ? '可选，如 10' : 'Optional, e.g. 10'}
+                        className="mt-2 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-[var(--color-text-secondary)]">
+                      {lang === 'zh' ? 'Token 上限' : 'Token limit'}
+                      <input
+                        value={maxTokens}
+                        disabled={creating !== null}
+                        inputMode="numeric"
+                        onChange={(event) => setMaxTokens(event.target.value)}
+                        placeholder={lang === 'zh' ? '可选，如 50000' : 'Optional, e.g. 50000'}
+                        className="mt-2 w-full rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
+                      />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {startError && (
+                <div className="mt-3 rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5 p-3 text-xs text-[var(--color-danger)]">
+                  {startError}
+                </div>
+              )}
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={creating !== null}
+                  onClick={() => {
+                    setStartingModule(null)
+                    setContinuationSource(null)
+                  }}
+                  className="rounded-lg border border-[var(--color-border)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                >
+                  {lang === 'zh' ? '取消' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  disabled={creating !== null || runIntent.trim().length === 0}
+                  onClick={() => void startModuleRun()}
+                  className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {creating === startingModule
+                    ? (lang === 'zh' ? '正在启动…' : 'Starting…')
+                    : (lang === 'zh' ? '启动并进入模块' : 'Start and open module')}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {error && (
           <div className="rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5 p-3 text-xs text-[var(--color-danger)]">
@@ -455,7 +1040,7 @@ export function WorkflowWorkspace() {
                   </div>
                 )}
 
-                <RunControls projectId={projectId} run={selectedRun} />
+                <RunControls projectId={projectId} run={selectedRun} onStartRun={startExistingRun} />
 
                 {selectedRun.status === 'completed' && (
                   <div>
@@ -468,13 +1053,7 @@ export function WorkflowWorkspace() {
                           key={module.type}
                           type="button"
                           disabled={creating !== null}
-                          onClick={() => {
-                            setCreating(module.type)
-                            void createRun(projectId, module.type, undefined, {
-                              inputArtifactIds: selectedRun.outputs,
-                              parentRunId: selectedRun.run_id,
-                            }).finally(() => setCreating(null))
-                          }}
+                          onClick={() => beginModule(module.type, selectedRun)}
                           className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
                         >
                           {module.icon} {lang === 'zh' ? module.zh : module.en}

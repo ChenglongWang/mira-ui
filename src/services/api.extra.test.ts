@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   createRemoteProject,
+  createWorkflowRun,
   deleteProject,
   deleteProjectFiles,
   fetchFeedbackConfig,
@@ -130,6 +131,34 @@ describe('api service', () => {
     it('throws response text on failure', async () => {
       fetchMock.mockResolvedValueOnce(fail('cannot create'))
       await expect(createRemoteProject({})).rejects.toThrow('cannot create')
+    })
+  })
+
+  describe('createWorkflowRun', () => {
+    it('creates a command id when randomUUID is unavailable in an insecure browser context', async () => {
+      vi.stubGlobal('crypto', {
+        getRandomValues: (bytes: Uint8Array) => {
+          bytes.fill(7)
+          return bytes
+        },
+      })
+      fetchMock.mockResolvedValueOnce(ok({ run_id: 'run-1', project_sequence: 1 }))
+
+      await createWorkflowRun('PRJ-1', {
+        moduleType: 'initiation',
+        moduleData: { intent: 'Find a direction' },
+        enqueue: true,
+      })
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+      expect(body.command_id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      )
+      expect(body).toMatchObject({
+        module_type: 'initiation',
+        module_data: { intent: 'Find a direction' },
+        enqueue: true,
+      })
     })
   })
 

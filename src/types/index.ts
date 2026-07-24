@@ -97,8 +97,10 @@ export interface Reference {
   title: string
   authors?: string
   year?: string
+  source?: string
   venue?: string
   url?: string
+  doi?: string
   summary?: string
   relevance?: string
 }
@@ -459,6 +461,32 @@ export type LiteratureSource =
 export interface LiteratureReviewOptions {
   enabled: boolean
   sources: LiteratureSource[]
+}
+
+export interface ResearchDirection {
+  id: string
+  title: string
+  rationale: string
+  tradeoffs?: string
+  next_step?: string
+}
+
+export interface LiteratureSearchRecord {
+  source: string
+  query: string
+  status: 'completed' | 'unavailable' | 'failed'
+  result_count: number
+  evidence_urls: string[]
+  detail?: string
+  searched_at: string
+}
+
+export interface InitiationResearchResult extends ResearchData {
+  schema_version: 1
+  searches: LiteratureSearchRecord[]
+  gaps: string[]
+  directions: ResearchDirection[]
+  updated_at?: string
 }
 
 export interface NewProjectInput {

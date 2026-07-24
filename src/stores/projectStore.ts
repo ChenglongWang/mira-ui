@@ -15,6 +15,7 @@ import {
 } from '@/services/api'
 import { wsClient } from '@/services/websocket'
 import { useWorkflowStore } from '@/stores/workflowStore'
+import { newProjectSessionId } from '@/lib/sessions'
 
 async function clearAgentLogs(projectId: string): Promise<void> {
   try {
@@ -66,6 +67,7 @@ interface ProjectState {
   deleteTask: (id: string, deleteFiles?: boolean) => Promise<boolean>
   duplicateTask: (id: string) => void
   createProject: (input: NewProjectInput) => Promise<string>
+  createProjectShell: (displayName: string) => Promise<string>
   loadProjects: (options?: { replaceMissing?: boolean; refreshAll?: boolean }) => Promise<void>
   resetWorkspaceState: () => void
 }
@@ -595,6 +597,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }))
     return id
   },
+
+  createProjectShell: async (displayName) => get().createProject({
+    projectId: newProjectSessionId(),
+    displayName,
+    description: '',
+  }),
 
   loadProjects: async (options) => {
     const remotes = await fetchProjects()

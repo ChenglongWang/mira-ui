@@ -57,6 +57,12 @@ describe('TaskDetail', () => {
     expect(screen.getByText('Why?')).toBeInTheDocument()
   })
 
+  it('renders the module start page in project mode', () => {
+    setProject({ appMode: 'project', activeStage: 'modules' })
+    render(<TaskDetail />)
+    expect(screen.getByText('Start from any module')).toBeInTheDocument()
+  })
+
   it('renders the result stage', () => {
     setProject({ activeStage: 'result' })
     render(<TaskDetail />)

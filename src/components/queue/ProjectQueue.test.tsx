@@ -22,6 +22,7 @@ describe('ProjectQueue mode switch', () => {
     useUiStore.setState(initialUiState, true)
     useChatStore.setState(initialChatState, true)
     useOrganizationStore.setState(initialOrganizationState, true)
+    useChatStore.setState({ chats: [], activeChatId: null, workspaceKey: 'test' })
     useSettingsStore.setState({ language: 'en' })
   })
 
@@ -106,5 +107,92 @@ describe('ProjectQueue mode switch', () => {
       expect(useOrganizationStore.getState().assignments.chat['chat-1']).toBe('folder-1')
     })
     vi.unstubAllGlobals()
+  })
+
+  it('enters a conversation instead of leaving the project start page active', () => {
+    useProjectStore.setState({
+      appMode: 'project',
+      selectedTaskId: 'PRJ-1',
+      tasks: [{
+        id: 'PRJ-1',
+        label: 'Project',
+        title: 'Project',
+        status: 'in_progress',
+        coreQuestion: 'Question',
+        experiments: [],
+        knowledge: [],
+        research: { references: [], notes: [] },
+        result: {},
+        startedAt: new Date().toISOString(),
+      }],
+    } as never)
+
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: /^Chats/ }))
+
+    expect(useProjectStore.getState().appMode).toBe('normal')
+    expect(useChatStore.getState().activeChatId).not.toBeNull()
+  })
+
+  it('enters project mode and selects a project at the module start page', () => {
+    useProjectStore.setState({
+      appMode: 'normal',
+      selectedTaskId: null,
+      activeStage: 'research',
+      tasks: [{
+        id: 'PRJ-1',
+        label: 'Project',
+        title: 'Project',
+        status: 'in_progress',
+        coreQuestion: 'Question',
+        experiments: [],
+        knowledge: [],
+        research: { references: [], notes: [] },
+        result: {},
+        startedAt: new Date().toISOString(),
+      }],
+    } as never)
+
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: /^Projects/ }))
+
+    expect(useProjectStore.getState().appMode).toBe('project')
+    expect(useProjectStore.getState().selectedTaskId).toBe('PRJ-1')
+    expect(useProjectStore.getState().activeStage).toBe('modules')
+  })
+
+  it('creates a lightweight project item and opens its overview without the setup modal', async () => {
+    useProjectStore.setState({
+      appMode: 'project',
+      selectedTaskId: null,
+      activeStage: 'research',
+      tasks: [],
+    } as never)
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: 'PRJ-new',
+      display_name: 'New project',
+      project_dir: '/tmp/projects/PRJ-new',
+      has_plan: false,
+      run_mode: 'auto',
+      agent_profile: 'research',
+      contract_version: 1,
+    }), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: 'New project' }))
+
+    await waitFor(() => expect(useProjectStore.getState().selectedTaskId).toBe('PRJ-new'))
+    expect(useProjectStore.getState().activeStage).toBe('modules')
+    expect(useProjectStore.getState().tasks[0]).toMatchObject({
+      id: 'PRJ-new',
+      label: 'New project',
+      coreQuestion: '',
+    })
+    expect(useUiStore.getState().newProjectOpen).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })

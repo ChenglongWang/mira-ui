@@ -23,17 +23,18 @@ export function ProjectQueue() {
     tasks,
     appMode,
     selectedTaskId,
+    setAppMode,
     selectTask,
     mode,
     setMode,
     renameTask,
     deleteTask,
     duplicateTask,
+    createProjectShell,
     refreshPlan,
     stats,
   } = useProjectStore()
   const lang = useSettingsStore((s) => s.language)
-  const openNewProject = useUiStore((s) => s.openNewProject)
   const pushSystemMessage = useUiStore((s) => s.pushSystemMessage)
   const modePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const modePollDeadlineRef = useRef<number>(0)
@@ -57,14 +58,14 @@ export function ProjectQueue() {
   const { folders, assignments, loaded: organizationLoaded, createFolder, renameFolder, deleteFolder, moveItem } = useOrganizationStore()
   const isChatActive = appMode === 'normal'
 
-  // Which list the rail is showing. Follows the active surface so entering a
-  // chat reveals the Chats tab and selecting a project reveals Projects, while
-  // still letting the user browse the other list without switching modes.
+  // The rail tabs are the two primary app-mode entry points. Their visible
+  // list follows the active surface rather than acting as a passive filter.
   const [tab, setTab] = useState<'chats' | 'projects'>(isChatActive ? 'chats' : 'projects')
   const [search, setSearch] = useState('')
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderDraft, setFolderDraft] = useState('')
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
+  const [creatingProject, setCreatingProject] = useState(false)
   useEffect(() => {
     setTab(isChatActive ? 'chats' : 'projects')
   }, [isChatActive])
@@ -92,6 +93,51 @@ export function ProjectQueue() {
 
   const handleSelectTask = (id: string) => {
     selectTask(id)
+  }
+
+  const handleChatsTab = () => {
+    setTab('chats')
+    const availableChatId = (
+      activeChatId && chats.some((chat) => chat.id === activeChatId)
+        ? activeChatId
+        : chats[0]?.id
+    )
+    if (availableChatId) {
+      selectChat(availableChatId)
+      return
+    }
+    createChat()
+  }
+
+  const handleProjectsTab = () => {
+    setTab('projects')
+    const availableProjectId = (
+      selectedTaskId && tasks.some((task) => task.id === selectedTaskId)
+        ? selectedTaskId
+        : tasks[0]?.id
+    )
+    if (availableProjectId) {
+      selectTask(availableProjectId)
+      return
+    }
+    setAppMode('project')
+  }
+
+  const handleCreateProject = async () => {
+    if (creatingProject) return
+    setCreatingProject(true)
+    try {
+      await createProjectShell(t('untitledProject', lang))
+      setTab('projects')
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      pushSystemMessage(
+        t('projectCreateFailed', lang, { reason: reason || t('unknownError', lang) }),
+        { severity: 'error', ttlMs: 7000 },
+      )
+    } finally {
+      setCreatingProject(false)
+    }
   }
 
   const stopModePoll = () => {
@@ -228,14 +274,18 @@ export function ProjectQueue() {
     <aside className="flex flex-col h-full border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
       {/* Tab bar: Chats | Projects + contextual add */}
       <div className="flex items-stretch border-b border-[var(--color-border)]">
-        <TabButton active={showChats} count={chats.length} onClick={() => setTab('chats')}>
+        <TabButton active={showChats} count={chats.length} onClick={handleChatsTab}>
           {t('conversations', lang)}
         </TabButton>
-        <TabButton active={!showChats} count={tasks.length} onClick={() => setTab('projects')}>
+        <TabButton active={!showChats} count={tasks.length} onClick={handleProjectsTab}>
           {t('projectsSection', lang)}
         </TabButton>
         <button
-          onClick={() => (showChats ? createChat() : openNewProject())}
+          onClick={() => {
+            if (showChats) createChat()
+            else void handleCreateProject()
+          }}
+          disabled={!showChats && creatingProject}
           className="w-7 shrink-0 flex items-center justify-center border-l border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           aria-label={showChats ? t('newChatAria', lang) : t('newProjectAria', lang)}
           title={showChats ? t('newChat', lang) : t('newProjectAria', lang)}

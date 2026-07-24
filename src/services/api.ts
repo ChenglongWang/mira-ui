@@ -1,4 +1,5 @@
 import { useSettingsStore } from '@/stores/settingsStore'
+import { createUuid } from '@/lib/uuid'
 import type {
   AgentProfile,
   ContractVersion,
@@ -559,7 +560,7 @@ export async function createWorkflowRun(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      command_id: crypto.randomUUID(),
+      command_id: createUuid(),
       module_type: payload.moduleType,
       label: payload.label,
       module_data: payload.moduleData,
@@ -580,7 +581,7 @@ export async function importWorkflowArtifact(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      command_id: crypto.randomUUID(),
+      command_id: createUuid(),
       source_path: sourcePath,
       artifact_type: artifactType,
     }),
@@ -603,7 +604,7 @@ export async function commandWorkflowRun(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        command_id: crypto.randomUUID(),
+        command_id: createUuid(),
         command_type: commandType,
         expected_revision: revision,
         payload: payload ?? {},
@@ -626,7 +627,7 @@ export async function commandWorkflowProject(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        command_id: crypto.randomUUID(),
+        command_id: createUuid(),
         command_type: commandType,
         expected_revision: revision,
         payload: payload ?? {},

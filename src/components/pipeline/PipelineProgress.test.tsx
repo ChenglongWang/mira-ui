@@ -125,6 +125,20 @@ describe('PipelineProgress agent profile switch', () => {
     expect(updatedTask?.contractVersion).toBe(2)
   })
 
+  it('does not expose interactive planning as a standalone pipeline stage', () => {
+    useProjectStore.setState({
+      appMode: 'project',
+      tasks: [makeTask(false)],
+      selectedTaskId: 'PRJ-0001',
+      activeStage: 'modules',
+    })
+
+    render(<PipelineProgress />)
+
+    expect(screen.getByRole('button', { name: /Overview/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Plan/ })).not.toBeInTheDocument()
+  })
+
   it('renders a minimal toolbar in chat mode without the project profile switch', () => {
     // The global "Normal" mode pill was removed in favour of per-thread Quick
     // Chat entries in the queue; chat mode now shows a stripped-down toolbar.
