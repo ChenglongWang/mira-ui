@@ -3,6 +3,10 @@ import { create } from 'zustand'
 import { commandWorkflowProject, commandWorkflowRun, createWorkflowRun, fetchWorkflowSnapshot } from '@/services/api'
 import type { WorkflowModuleType, WorkflowSnapshot, WorkflowSocketMessage } from '@/types'
 
+function isGenericActivityPing(summary: string): boolean {
+  return /^mira is working(?:\.\.\.)?$/i.test(summary.trim())
+}
+
 interface WorkflowState {
   snapshots: Record<string, WorkflowSnapshot | undefined>
   loadingByProject: Record<string, boolean>
@@ -124,8 +128,14 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     if (message.message_type === 'activity' && message.run_id) {
       set((state) => {
         const next = { ...state.activityByRun }
-        if (message.summary) next[message.run_id as string] = message.summary
-        else delete next[message.run_id as string]
+        const runId = message.run_id as string
+        if (!message.summary) {
+          delete next[runId]
+        } else if (!isGenericActivityPing(message.summary) || !next[runId]) {
+          // A heartbeat proves liveness but must not overwrite the last useful
+          // one-line tool/progress description for this Run.
+          next[runId] = message.summary
+        }
         return { activityByRun: next }
       })
     }

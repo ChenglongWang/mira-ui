@@ -591,6 +591,21 @@ export async function importWorkflowArtifact(
   return payload.artifact
 }
 
+export async function fetchWorkflowArtifact(
+  projectId: string,
+  artifactId: string,
+): Promise<import('@/types').WorkflowArtifact> {
+  const response = await fetch(
+    `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`,
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as import('@/types').WorkflowArtifact
+}
+
+export function getWorkflowArtifactContentUrl(projectId: string, artifactId: string): string {
+  return `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/content`
+}
+
 export async function commandWorkflowRun(
   projectId: string,
   runId: string,

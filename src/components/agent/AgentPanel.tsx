@@ -41,6 +41,13 @@ function deriveActivityLabel(logs: AgentLogEntry[]): string | null {
   return null
 }
 
+function deriveWorkflowActivityLabel(activity: string | undefined): string | null {
+  if (!activity) return null
+  const normalized = activity.trim()
+  if (!normalized || /^mira is working(?:\.\.\.)?$/i.test(normalized)) return null
+  return condenseActivity(normalized, 80)
+}
+
 // Build a project-description seed from a chat's transcript so promoting a
 // conversation into a research project carries the context forward.
 function buildPromotePrefill(logs: AgentLogEntry[]): string {
@@ -291,6 +298,9 @@ export function AgentPanel() {
   const workflowSnapshot = useWorkflowStore((s) => (
     selectedTaskId ? s.snapshots[selectedTaskId] : undefined
   ))
+  const workflowActivity = useWorkflowStore((s) => (
+    selectedWorkflowRunId ? s.activityByRun[selectedWorkflowRunId] : undefined
+  ))
   const activeStage = useProjectStore((s) => s.activeStage)
   const mode = useProjectStore((s) => s.mode)
   const activeChatId = useChatStore((s) => s.activeChatId)
@@ -354,7 +364,11 @@ export function AgentPanel() {
   const showThinking = isStreaming && !isStreamingEntryLive
   // Surface the current task (e.g. latest tool call) so the indicator proves
   // Mira is actively working rather than a static "thinking" spinner.
-  const activityLabel = useMemo(() => deriveActivityLabel(logs), [logs])
+  const activityLabel = useMemo(
+    () => deriveActivityLabel(logs)
+      ?? (!isChat ? deriveWorkflowActivityLabel(workflowActivity) : null),
+    [isChat, logs, workflowActivity],
+  )
 
   const [collapsedProgressGroups, setCollapsedProgressGroups] = useState<Record<string, boolean>>({})
   const scrollRef = useRef<HTMLDivElement>(null)

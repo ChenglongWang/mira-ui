@@ -8,12 +8,14 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useSkillPluginsStore } from '@/stores/skillPluginsStore'
+import { useWorkflowStore } from '@/stores/workflowStore'
 
 const initialAgentState = useAgentStore.getState()
 const initialProjectState = useProjectStore.getState()
 const initialChatState = useChatStore.getState()
 const initialSettingsState = useSettingsStore.getState()
 const initialSkillPluginsState = useSkillPluginsStore.getState()
+const initialWorkflowState = useWorkflowStore.getState()
 
 describe('AgentPanel keyboard behavior', () => {
   beforeEach(() => {
@@ -23,6 +25,7 @@ describe('AgentPanel keyboard behavior', () => {
     useChatStore.setState(initialChatState, true)
     useSettingsStore.setState(initialSettingsState, true)
     useSkillPluginsStore.setState(initialSkillPluginsState, true)
+    useWorkflowStore.setState(initialWorkflowState, true)
 
     useSettingsStore.setState({ language: 'en' })
     useProjectStore.setState({
@@ -257,6 +260,69 @@ describe('AgentPanel keyboard behavior', () => {
     render(<AgentPanel />)
 
     expect(screen.getByText('Mira is running: exec("python inspect.py")')).toBeInTheDocument()
+    expect(screen.queryByText('Mira is thinking...')).toBeNull()
+  })
+
+  it('shows the current ModuleRun activity in the project conversation bubble', () => {
+    useProjectStore.setState({
+      appMode: 'project',
+      activeStage: 'result',
+    })
+    useWorkflowStore.setState({
+      selectedRunByProject: { 'PRJ-0001': 'run-delivery' },
+      snapshots: {
+        'PRJ-0001': {
+          workflow_contract_version: 1,
+          project_id: 'PRJ-0001',
+          project_sequence: 1,
+          workflow: {
+            contract_version: 1,
+            status: 'active',
+            revision: 1,
+            last_project_sequence: 1,
+            selected_run_id: 'run-delivery',
+            handoff_policy: { mode: 'manual', interrupt_grace_seconds: 10, rules: [] },
+          },
+          runs: [{
+            schema_version: 1,
+            workflow_contract_version: 1,
+            run_id: 'run-delivery',
+            project_id: 'PRJ-0001',
+            module_type: 'delivery',
+            label: 'Delivery 1',
+            status: 'running',
+            revision: 2,
+            created_at: '2026-07-31T00:00:00Z',
+            updated_at: '2026-07-31T00:00:01Z',
+            inputs: [],
+            outputs: [],
+            attempt: { number: 1 },
+            attempts: [],
+            conversation_key: 'ui:PRJ-0001:run:run-delivery',
+            last_project_sequence: 1,
+            last_run_sequence: 2,
+            module_data: {},
+          }],
+        },
+      },
+      activityByRun: { 'run-delivery': 'write result/exports/presentation.pdf' },
+    })
+    useAgentStore.setState({
+      streamingBySession: { 'PRJ-0001:run:run-delivery': true },
+      logsByProject: {
+        'PRJ-0001:run:run-delivery': [{
+          id: 'user-run',
+          timestamp: new Date().toISOString(),
+          content: 'Create the presentation',
+          type: 'response',
+          metadata: { _user: true },
+        }],
+      },
+    })
+
+    render(<AgentPanel />)
+
+    expect(screen.getByText('Mira is running: write result/exports/presentation.pdf')).toBeInTheDocument()
     expect(screen.queryByText('Mira is thinking...')).toBeNull()
   })
 

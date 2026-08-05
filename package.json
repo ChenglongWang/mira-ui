@@ -77,7 +77,11 @@
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.91.0",
+    "chart.js": "^4.4.9",
     "clsx": "^2.1.0",
+    "docx-preview": "^0.4.0",
+    "jszip": "^3.10.1",
+    "pptxviewjs": "^1.1.9",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-markdown": "^10.1.0",

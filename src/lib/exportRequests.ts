@@ -2,7 +2,7 @@ import type { ProjectTask } from '@/types'
 
 export type ExportFormat = 'experiment_report' | 'paper_article' | 'presentation' | 'metadata'
 
-type ExportConfig = {
+export type ExportConfig = {
   title: string
   outputPath: string
   outputType: string
@@ -83,6 +83,10 @@ const EXPORT_CONFIG: Record<ExportFormat, ExportConfig> = {
       'Write a non-empty zip archive at result/exports/project_metadata.zip.',
     ],
   },
+}
+
+export function getExportConfig(format: ExportFormat): Readonly<ExportConfig> {
+  return EXPORT_CONFIG[format]
 }
 
 export function buildExportMessage(task: ProjectTask, format: ExportFormat): string {

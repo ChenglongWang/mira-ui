@@ -11,12 +11,16 @@ import type {
   AutomationGoalOperator,
   LiteratureSource,
   PipelineStage,
-  WorkflowInteraction,
   WorkflowModuleType,
   WorkflowRun,
   WorkflowRunStatus,
 } from '@/types'
 import { cn } from '@/lib/utils'
+import {
+  buildExportMessage,
+  getExportConfig,
+  type ExportFormat,
+} from '@/lib/exportRequests'
 import { importWorkflowArtifact } from '@/services/api'
 import { wsClient } from '@/services/websocket'
 
@@ -55,6 +59,17 @@ const LITERATURE_SOURCE_OPTIONS: Array<{ key: LiteratureSource; label: string }>
   { key: 'europe_pmc', label: 'Europe PMC' },
 ]
 const DEFAULT_LITERATURE_SOURCES = LITERATURE_SOURCE_OPTIONS.map((source) => source.key)
+const DELIVERY_FORMAT_OPTIONS: Array<{
+  format: ExportFormat
+  icon: string
+  en: string
+  zh: string
+}> = [
+  { format: 'experiment_report', icon: '📋', en: 'Experiment Report', zh: '实验报告' },
+  { format: 'paper_article', icon: '📄', en: 'Journal Article (.docx)', zh: '期刊论文（.docx）' },
+  { format: 'presentation', icon: '📊', en: 'Presentation (PDF)', zh: '演示文稿（PDF）' },
+  { format: 'metadata', icon: '📦', en: 'Project Metadata (ZIP)', zh: '项目元数据（ZIP）' },
+]
 
 function detectPromptLanguage(text: string, fallback: 'zh' | 'en'): 'zh' | 'en' {
   const hanCount = (text.match(/[\u3400-\u9fff]/g) ?? []).length
@@ -136,127 +151,6 @@ const MODULE_STAGE: Record<WorkflowModuleType, PipelineStage> = {
   planning: 'plan',
   experiment: 'experiment',
   delivery: 'result',
-}
-
-function InteractionPanel({ projectId, run }: { projectId: string; run: WorkflowRun }) {
-  const commandRun = useWorkflowStore((state) => state.commandRun)
-  const lang = useSettingsStore((state) => state.language)
-  const interaction = run.module_data.interaction as WorkflowInteraction | undefined
-  const [selected, setSelected] = useState<unknown>(undefined)
-  const [freeform, setFreeform] = useState('')
-  const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  if (run.status !== 'waiting_input' || !interaction || interaction.response !== undefined) return null
-
-  const choiceValue = (choice: Record<string, unknown>) => (
-    choice.value ?? choice.artifact_id ?? choice.id ?? choice.label
-  )
-  const choiceLabel = (choice: Record<string, unknown>) => String(
-    choice.label ?? choice.title ?? choice.name ?? choiceValue(choice) ?? '',
-  )
-  const buildResponse = () => {
-    const schema = interaction.response_schema
-    const value = selected ?? freeform.trim()
-    if (schema.type !== 'object') return value
-    const required = Array.isArray(schema.required)
-      ? schema.required.filter((item): item is string => typeof item === 'string')
-      : []
-    const primary = required[0] ?? 'value'
-    const response: Record<string, unknown> = { [primary]: value }
-    const properties = schema.properties
-    if (
-      selected !== undefined
-      && freeform.trim()
-      && primary !== 'notes'
-      && properties && typeof properties === 'object' && 'notes' in properties
-    ) response.notes = freeform.trim()
-    return response
-  }
-  const canSubmit = selected !== undefined || (interaction.allow_freeform && freeform.trim().length > 0)
-
-  return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
-      <div className="text-sm font-semibold text-[var(--color-text-primary)]">{interaction.title}</div>
-      <div className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)]">{interaction.prompt}</div>
-      {interaction.choices.length > 0 && (
-        <div className="mt-3 grid gap-2">
-          {interaction.choices.map((choice, index) => {
-            const value = choiceValue(choice)
-            const active = selected === value
-            return (
-              <button
-                key={String(choice.id ?? index)}
-                type="button"
-                onClick={() => setSelected(value)}
-                className={cn(
-                  'rounded-lg border px-3 py-2 text-left text-xs',
-                  active
-                    ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
-                    : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]',
-                )}
-              >
-                {choiceLabel(choice)}
-              </button>
-            )
-          })}
-        </div>
-      )}
-      {interaction.allow_freeform && (
-        <textarea
-          value={freeform}
-          onChange={(event) => setFreeform(event.target.value)}
-          placeholder={lang === 'zh' ? '补充说明或直接输入你的决定' : 'Add notes or enter your decision'}
-          className="mt-3 min-h-20 w-full resize-y rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-xs text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
-        />
-      )}
-      <button
-        type="button"
-        disabled={!canSubmit || pending}
-        onClick={() => {
-          const response = buildResponse()
-          setPending(true)
-          setError(null)
-          void commandRun(projectId, run.run_id, 'submit_interaction', {
-            interaction_id: interaction.interaction_id,
-            response,
-          }).then(() => {
-            if (!wsClient.connected) return
-            const conversationId = `${projectId}:run:${run.run_id}`
-            const continuation = lang === 'zh'
-              ? `继续执行。结构化交互 ${interaction.interaction_id} 的回答已保存。`
-              : `Continue execution. The response to structured interaction ${interaction.interaction_id} is saved.`
-            useAgentStore.getState().addLog(conversationId, {
-              id: `interaction-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              content: `${interaction.title}: ${JSON.stringify(response)}`,
-              type: 'response',
-              metadata: { _user: true, _structured_interaction: true },
-            })
-            useAgentStore.getState().markSessionPending(conversationId)
-            const projectState = useProjectStore.getState()
-            wsClient.send({
-              type: 'message',
-              content: continuation,
-              session_id: projectId,
-              user_id: 'ui_user',
-              loop_mode: 'project',
-              stream: useSettingsStore.getState().streamResponses,
-              mode: projectState.mode,
-              agent_profile: projectState.agentProfile,
-              workflow_run_id: run.run_id,
-              workflow_module_type: run.module_type,
-            })
-          }).catch((reason) => {
-            setError(reason instanceof Error ? reason.message : String(reason))
-          }).finally(() => setPending(false))
-        }}
-        className="mt-3 rounded-md bg-[var(--color-accent)] px-3 py-2 text-xs font-medium text-white disabled:opacity-50"
-      >
-        {pending ? (lang === 'zh' ? '提交中…' : 'Submitting…') : (lang === 'zh' ? '确认并继续' : 'Confirm and continue')}
-      </button>
-      {error && <div className="mt-2 text-xs text-[var(--color-danger)]">{error}</div>}
-    </div>
-  )
 }
 
 function RunControls({
@@ -378,6 +272,7 @@ export function WorkflowWorkspace() {
   const [goalValueInputs, setGoalValueInputs] = useState<string[]>([])
   const [maxExperiments, setMaxExperiments] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
+  const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
   const [startError, setStartError] = useState<string | null>(null)
   const selectedRun = useMemo(
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId) ?? null,
@@ -402,6 +297,7 @@ export function WorkflowWorkspace() {
     setGoalValueInputs([])
     setMaxExperiments('')
     setMaxTokens('')
+    setDeliveryFormat(null)
     setStartError(null)
   }
 
@@ -524,6 +420,18 @@ export function WorkflowWorkspace() {
         return
       }
     }
+    if (startingModule === 'delivery') {
+      if (!deliveryFormat) {
+        setStartError(
+          lang === 'zh' ? '请选择需要的交付物形式。' : 'Choose a deliverable format.',
+        )
+        return
+      }
+      const config = getExportConfig(deliveryFormat)
+      moduleData.delivery_format = deliveryFormat
+      moduleData.output_path = config.outputPath
+      moduleData.output_type = config.outputType
+    }
     if (!connected || !wsClient.connected) {
       setStartError(
         lang === 'zh'
@@ -548,7 +456,9 @@ export function WorkflowWorkspace() {
         `${intent}\n${typeof moduleData.references === 'string' ? moduleData.references : ''}`,
         lang,
       )
-      const startPrompt = buildModuleStartPrompt(moduleType, intent, moduleData, promptLanguage)
+      const startPrompt = moduleType === 'delivery' && deliveryFormat && task
+        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat)}`
+        : buildModuleStartPrompt(moduleType, intent, moduleData, promptLanguage)
       useAgentStore.getState().addLog(conversationId, {
         id: `module-start-${Date.now()}`,
         timestamp: new Date().toISOString(),
@@ -573,6 +483,7 @@ export function WorkflowWorkspace() {
       })
       setStartingModule(null)
       setContinuationSource(null)
+      setDeliveryFormat(null)
       setRunIntent('')
     } catch (reason) {
       setStartError(reason instanceof Error ? reason.message : String(reason))
@@ -886,6 +797,45 @@ export function WorkflowWorkspace() {
                 </div>
               )}
 
+              {startingModule === 'delivery' && (
+                <fieldset className="mt-4">
+                  <legend className="text-xs font-medium text-[var(--color-text-secondary)]">
+                    {lang === 'zh' ? '选择交付物形式' : 'Choose deliverable format'}
+                  </legend>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {DELIVERY_FORMAT_OPTIONS.map((option) => {
+                      const config = getExportConfig(option.format)
+                      const active = deliveryFormat === option.format
+                      return (
+                        <button
+                          key={option.format}
+                          type="button"
+                          aria-pressed={active}
+                          disabled={creating !== null}
+                          onClick={() => {
+                            setDeliveryFormat(option.format)
+                            setStartError(null)
+                          }}
+                          className={cn(
+                            'rounded-xl border p-3 text-left',
+                            active
+                              ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10'
+                              : 'border-[var(--color-border)] bg-[var(--color-bg-primary)] hover:bg-[var(--color-bg-hover)]',
+                          )}
+                        >
+                          <div className="text-sm font-medium text-[var(--color-text-primary)]">
+                            {option.icon} {lang === 'zh' ? option.zh : option.en}
+                          </div>
+                          <div className="mt-1 truncate font-mono text-[10px] text-[var(--color-text-muted)]">
+                            {config.outputPath}
+                          </div>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </fieldset>
+              )}
+
               {startError && (
                 <div className="mt-3 rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5 p-3 text-xs text-[var(--color-danger)]">
                   {startError}
@@ -906,7 +856,11 @@ export function WorkflowWorkspace() {
                 </button>
                 <button
                   type="button"
-                  disabled={creating !== null || runIntent.trim().length === 0}
+                  disabled={
+                    creating !== null
+                    || runIntent.trim().length === 0
+                    || (startingModule === 'delivery' && !deliveryFormat)
+                  }
                   onClick={() => void startModuleRun()}
                   className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
                 >
@@ -1007,8 +961,6 @@ export function WorkflowWorkspace() {
                     </div>
                   </div>
                 )}
-
-                <InteractionPanel key={String((selectedRun.module_data.interaction as WorkflowInteraction | undefined)?.interaction_id ?? selectedRun.run_id)} projectId={projectId} run={selectedRun} />
 
                 {Boolean(selectedRun.module_data.recovery) && (
                   <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-600">

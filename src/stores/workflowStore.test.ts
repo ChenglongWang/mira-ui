@@ -125,4 +125,15 @@ describe('workflowStore', () => {
     })
     expect(useWorkflowStore.getState().activityByRun['run-1']).toBeUndefined()
   })
+
+  it('keeps the last useful Run activity when a generic heartbeat arrives', () => {
+    useWorkflowStore.getState().handleSocketMessage({
+      message_type: 'activity', project_id: 'PRJ-1', run_id: 'run-1', summary: 'read evidence.md',
+    })
+    useWorkflowStore.getState().handleSocketMessage({
+      message_type: 'activity', project_id: 'PRJ-1', run_id: 'run-1', summary: 'Mira is working...',
+    })
+
+    expect(useWorkflowStore.getState().activityByRun['run-1']).toBe('read evidence.md')
+  })
 })

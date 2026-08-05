@@ -232,6 +232,7 @@ describe('WorkflowWorkspace module entry', () => {
     fireEvent.change(screen.getByLabelText('Goal for this run'), {
       target: { value: 'Write a concise research report from the selected direction' },
     })
+    fireEvent.click(screen.getByRole('button', { name: /Journal Article/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Start and open module' }))
 
     await waitFor(() => {
@@ -239,7 +240,10 @@ describe('WorkflowWorkspace module entry', () => {
         moduleType: 'delivery',
         enqueue: true,
         moduleData: {
+          delivery_format: 'paper_article',
           intent: 'Write a concise research report from the selected direction',
+          output_path: 'result/exports/journal_article.docx',
+          output_type: 'article_docx',
           parent_run_id: 'source-run',
         },
         inputs: [{ artifact_id: 'artifact-1' }, { artifact_id: 'artifact-2' }],
@@ -247,7 +251,7 @@ describe('WorkflowWorkspace module entry', () => {
     })
     expect(wsClient.send).toHaveBeenCalledWith(expect.objectContaining({
       type: 'message',
-      content: 'Write a concise research report from the selected direction',
+      content: expect.stringContaining('Target format: Journal Article (.docx)'),
       workflow_run_id: 'delivery-run',
       workflow_module_type: 'delivery',
     }))

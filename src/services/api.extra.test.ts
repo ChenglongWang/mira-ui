@@ -12,7 +12,9 @@ import {
   fetchSessionHistory,
   fetchSkillPlugins,
   fetchStatus,
+  fetchWorkflowArtifact,
   getProjectArtifactUrl,
+  getWorkflowArtifactContentUrl,
   installSkillPluginFromDirectory,
   installSkillPluginFromZip,
   setSkillPluginState,
@@ -271,6 +273,18 @@ describe('api service', () => {
   it('getProjectArtifactUrl builds an encoded url', () => {
     const url = getProjectArtifactUrl('PRJ 1', 'a/b.png')
     expect(url).toContain('/projects/PRJ%201/artifacts?path=a%2Fb.png')
+  })
+
+  it('fetches workflow artifact metadata and builds its content URL', async () => {
+    fetchMock.mockResolvedValueOnce(ok({ artifact_id: 'ART 1', label: 'report.pdf' }))
+    await expect(fetchWorkflowArtifact('PRJ 1', 'ART 1')).resolves.toEqual({
+      artifact_id: 'ART 1',
+      label: 'report.pdf',
+    })
+    expect(lastUrl()).toContain('/workflow/v1/projects/PRJ%201/artifacts/ART%201')
+    expect(getWorkflowArtifactContentUrl('PRJ 1', 'ART 1')).toContain(
+      '/workflow/v1/projects/PRJ%201/artifacts/ART%201/content',
+    )
   })
 
   describe('skill plugins', () => {
