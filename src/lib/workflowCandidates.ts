@@ -48,6 +48,12 @@ function interactionSelection(interaction: WorkflowInteraction | undefined): str
   return selected === undefined || selected === null ? null : String(selected)
 }
 
+export function isWorkflowCandidateInteraction(
+  interaction: WorkflowInteraction | null | undefined,
+): boolean {
+  return Boolean(interaction && !interaction.interaction_type.startsWith('approve_'))
+}
+
 function outputLabel(run: WorkflowRun, artifactId: string, index: number): string {
   const outputPath = text(run.module_data.output_path)
   if (run.outputs.length === 1 && outputPath) {
@@ -102,7 +108,9 @@ export function buildWorkflowCandidates(
       })
     }
 
-    for (const choice of interaction?.choices ?? []) {
+    for (const choice of isWorkflowCandidateInteraction(interaction)
+      ? interaction?.choices ?? []
+      : []) {
       const itemId = choiceValue(choice)
       if (!itemId || seenItemIds.has(itemId)) continue
       seenItemIds.add(itemId)

@@ -400,7 +400,9 @@ export function WorkflowWorkspace() {
       return
     }
 
-    const moduleData: Record<string, unknown> = {}
+    const moduleData: Record<string, unknown> = {
+      confirmation_policy: { mode: 'required' },
+    }
     if (continuationSource) {
       moduleData.upstream_selection = {
         module_type: continuationSource.moduleType,
@@ -541,7 +543,7 @@ export function WorkflowWorkspace() {
 
   return (
     <div className="h-full overflow-y-auto bg-[var(--color-bg-primary)]">
-      <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-6 p-6">
+      <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-6 p-6 xl:h-full xl:min-h-0">
         <div className="flex justify-end">
           {snapshot && (
             <label className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">

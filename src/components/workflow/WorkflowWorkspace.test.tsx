@@ -114,6 +114,7 @@ describe('WorkflowWorkspace module entry', () => {
       expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', {
         moduleType: 'initiation',
         moduleData: {
+          confirmation_policy: { mode: 'required' },
           intent: 'Find three testable research directions',
           literature_review: {
             enabled: true,
@@ -149,6 +150,28 @@ describe('WorkflowWorkspace module entry', () => {
     expect(visiblePrompt).toContain('auditable reference cards')
   })
 
+  it('keeps the overview constrained to the viewport after opening a module and returning', () => {
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': snapshot },
+      selectedRunByProject: { 'PRJ-1': 'run-1' },
+    })
+    const firstView = render(<WorkflowWorkspace />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open selected' }))
+    expect(useProjectStore.getState().activeStage).toBe('research')
+    firstView.unmount()
+
+    useProjectStore.setState({ activeStage: 'modules' })
+    render(<WorkflowWorkspace />)
+
+    const overview = screen.getByRole('region', { name: 'Project overview' })
+    expect(overview.parentElement).toHaveClass('xl:h-full', 'xl:min-h-0')
+    expect(overview).toHaveClass('xl:min-h-0', 'xl:overflow-hidden')
+    const researchStage = screen.getByRole('heading', { name: '1. Research' }).closest('.relative')
+    expect(researchStage).toHaveClass('xl:min-h-0')
+    expect(researchStage).not.toHaveClass('h-full')
+  })
+
   it('passes experiment limits and stopping conditions into the ModuleRun', async () => {
     render(<WorkflowWorkspace />)
 
@@ -175,6 +198,7 @@ describe('WorkflowWorkspace module entry', () => {
       expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', {
         moduleType: 'experiment',
         moduleData: {
+          confirmation_policy: { mode: 'required' },
           intent: 'Why?',
           automation_policy: {
             logic: 'AND',
@@ -242,6 +266,7 @@ describe('WorkflowWorkspace module entry', () => {
         moduleType: 'delivery',
         enqueue: true,
         moduleData: {
+          confirmation_policy: { mode: 'required' },
           delivery_format: 'paper_article',
           intent: 'Write a concise research report from the selected direction',
           output_path: 'result/exports/journal_article.docx',

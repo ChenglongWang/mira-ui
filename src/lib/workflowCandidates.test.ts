@@ -78,6 +78,30 @@ describe('workflowCandidates', () => {
     expect(selected?.artifactIds).toEqual(['metric-b'])
   })
 
+  it('does not expose approval controls as deliverable candidates', () => {
+    const run = makeRun({
+      status: 'waiting_input',
+      module_data: {
+        interaction: {
+          interaction_id: 'research-approval',
+          interaction_type: 'approve_research_scope',
+          title: 'Approve research brief',
+          prompt: 'Approve this scope?',
+          response_schema: { type: 'object', required: ['selection'] },
+          choices: [
+            { id: 'approve', label: 'Approve', value: 'approve' },
+            { id: 'revise', label: 'Revise', value: 'revise' },
+          ],
+          allow_freeform: true,
+        },
+      },
+    })
+
+    expect(buildWorkflowCandidates([run], 'initiation').map((item) => item.itemId)).toEqual([
+      'research-bundle',
+    ])
+  })
+
   it('loads only the downstream Runs linked to the selected item', () => {
     const researchRun = makeRun({
       module_data: {

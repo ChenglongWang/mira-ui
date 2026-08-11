@@ -139,6 +139,7 @@ describe('ModuleStageControls', () => {
         enqueue: true,
         inputs: [{ artifact_id: 'artifact-2' }],
         moduleData: {
+          confirmation_policy: { mode: 'required' },
           delivery_format: 'paper_article',
           intent: 'Prepare the manuscript for journal submission',
           output_path: 'result/exports/journal_article.docx',
@@ -250,5 +251,60 @@ describe('ModuleStageControls', () => {
       workflow_run_id: 'source-run',
       workflow_module_type: 'initiation',
     }))
+  })
+
+  it('keeps execution confirmation local instead of selecting a deliverable candidate', async () => {
+    const run = makeRun({
+      status: 'waiting_input',
+      module_data: {
+        confirmation_policy: { mode: 'required' },
+        interaction: {
+          interaction_id: 'research-approval',
+          interaction_type: 'approve_research_scope',
+          title: 'Approve the research brief',
+          prompt: 'Question, sources, boundaries, and expected outcome.',
+          choices: [
+            { id: 'approve', label: 'Approve', value: 'approve' },
+            { id: 'revise', label: 'Revise', value: 'revise' },
+          ],
+          response_schema: {
+            type: 'object',
+            required: ['selection'],
+            properties: {
+              selection: { type: 'string' },
+              notes: { type: 'string' },
+            },
+          },
+          allow_freeform: true,
+        },
+      },
+    })
+    const snapshot = makeSnapshot(run)
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': snapshot },
+      selectedRunByProject: { 'PRJ-1': run.run_id },
+    })
+    vi.mocked(fetchWorkflowSnapshot).mockResolvedValue(snapshot)
+    vi.mocked(commandWorkflowRun).mockResolvedValue({} as never)
+
+    render(<ModuleStageControls />)
+
+    expect(screen.getByText('AI execution confirmation')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(useWorkflowStore.getState().selectedCandidateByProject['PRJ-1']).toBeUndefined()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve and continue' }))
+
+    await waitFor(() => {
+      expect(commandWorkflowRun).toHaveBeenCalledWith(
+        'PRJ-1',
+        'source-run',
+        'submit_interaction',
+        2,
+        {
+          interaction_id: 'research-approval',
+          response: { selection: 'approve' },
+        },
+      )
+    })
   })
 })

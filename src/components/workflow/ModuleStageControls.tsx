@@ -156,7 +156,9 @@ export function ModuleStageControls() {
       return
     }
 
-    const moduleData: Record<string, unknown> = {}
+    const moduleData: Record<string, unknown> = {
+      confirmation_policy: { mode: 'required' },
+    }
     if (selectedCandidate) {
       moduleData.upstream_selection = {
         module_type: selectedRun.module_type,

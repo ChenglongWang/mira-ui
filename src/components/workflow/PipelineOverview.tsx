@@ -121,7 +121,7 @@ export function PipelineOverview({
   return (
     <section
       aria-labelledby="pipeline-overview-title"
-      className="flex min-h-[32rem] flex-1 flex-col rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4 shadow-sm"
+      className="flex min-h-[32rem] flex-1 flex-col rounded-2xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4 shadow-sm xl:min-h-0 xl:overflow-hidden"
     >
       <div className="mb-4 flex shrink-0 flex-wrap items-end justify-between gap-3">
         <div>
@@ -144,7 +144,7 @@ export function PipelineOverview({
           const { runs: stageRuns, candidates, selected } = stageViews[stage.moduleType]
           const canContinue = selected?.status === 'completed' && stage.next
           return (
-            <div key={stage.moduleType} className="relative flex h-full min-h-[28rem] flex-col rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3.5">
+            <div key={stage.moduleType} className="relative flex min-h-[28rem] flex-col rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3.5 xl:min-h-0">
               {index < PIPELINE_STAGES.length - 1 && (
                 <div className="absolute -right-3 top-8 z-10 hidden h-6 w-6 items-center justify-center rounded-full border border-[var(--color-border)] bg-[var(--color-bg-secondary)] text-xs text-[var(--color-accent)] xl:flex">
                   →
