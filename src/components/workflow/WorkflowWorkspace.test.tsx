@@ -99,7 +99,7 @@ describe('WorkflowWorkspace module entry', () => {
   it('collects a goal, creates an enqueued run, opens its module, and sends the first message', async () => {
     render(<WorkflowWorkspace />)
 
-    fireEvent.click(screen.getByRole('button', { name: /Initiation.*Start module/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Research.*Start module/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
 
     const intent = screen.getByLabelText('Goal for this run')
@@ -197,6 +197,7 @@ describe('WorkflowWorkspace module entry', () => {
       runs: [{
         ...snapshot.runs[0],
         run_id: 'source-run',
+        module_type: 'experiment',
         status: 'completed',
         revision: 2,
         outputs: ['artifact-1', 'artifact-2'],
@@ -218,6 +219,7 @@ describe('WorkflowWorkspace module entry', () => {
 
     render(<WorkflowWorkspace />)
 
+    fireEvent.click(screen.getByRole('button', { name: 'Select candidate: 2. artifact-2' }))
     const handoffHeading = await screen.findByText('Continue from this result (new branch)')
     const handoffSection = handoffHeading.parentElement
     expect(handoffSection).not.toBeNull()
@@ -228,7 +230,7 @@ describe('WorkflowWorkspace module entry', () => {
     )
 
     expect(screen.getByRole('dialog')).toBeInTheDocument()
-    expect(screen.getByText(/Inherits 2 artifact/)).toBeInTheDocument()
+    expect(screen.getByText(/Inherits 1 artifact/)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Goal for this run'), {
       target: { value: 'Write a concise research report from the selected direction' },
     })
@@ -245,8 +247,14 @@ describe('WorkflowWorkspace module entry', () => {
           output_path: 'result/exports/journal_article.docx',
           output_type: 'article_docx',
           parent_run_id: 'source-run',
+          upstream_selection: {
+            module_type: 'experiment',
+            run_id: 'source-run',
+            item_id: 'artifact-2',
+            label: '2. artifact-2',
+          },
         },
-        inputs: [{ artifact_id: 'artifact-1' }, { artifact_id: 'artifact-2' }],
+        inputs: [{ artifact_id: 'artifact-2' }],
       })
     })
     expect(wsClient.send).toHaveBeenCalledWith(expect.objectContaining({
@@ -277,7 +285,7 @@ describe('WorkflowWorkspace module entry', () => {
   it('uses the research brief language for the visible initiation prompt', async () => {
     render(<WorkflowWorkspace />)
 
-    fireEvent.click(screen.getByRole('button', { name: /Initiation.*Start module/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Research.*Start module/i }))
     fireEvent.change(screen.getByLabelText('Goal for this run'), {
       target: { value: '调研近三年的肝纤维化分级研究' },
     })
@@ -305,5 +313,163 @@ describe('WorkflowWorkspace module entry', () => {
     expect(await screen.findByText(/Agent chat is not connected yet/)).toBeInTheDocument()
     expect(createWorkflowRun).not.toHaveBeenCalled()
     ;(wsClient as { connected: boolean }).connected = true
+  })
+
+  it('shows candidate items in all three stages and branches from a changed research choice', async () => {
+    const pipelineSnapshot: WorkflowSnapshot = {
+      ...snapshot,
+      project_sequence: 6,
+      workflow: { ...snapshot.workflow, selected_run_id: 'research-run' },
+      runs: [
+        {
+          ...snapshot.runs[0],
+          run_id: 'research-run',
+          label: 'Research options',
+          status: 'completed',
+          outputs: ['research-bundle'],
+          module_data: {
+            intent: 'Find directions',
+            research_result: {
+              schema_version: 1,
+              references: [],
+              notes: [],
+              searches: [],
+              gaps: [],
+              directions: [
+                { id: 'direction-a', title: 'Direction A', rationale: 'Fast validation.' },
+                { id: 'direction-b', title: 'Direction B', rationale: 'Higher upside.' },
+                { id: 'direction-c', title: 'Direction C', rationale: 'Unexplored branch.' },
+              ],
+            },
+            interaction: {
+              interaction_id: 'choose-direction',
+              interaction_type: 'choose_direction',
+              title: 'Choose direction',
+              prompt: 'Choose one',
+              choices: [
+                { id: 'direction-a', label: 'Direction A' },
+                { id: 'direction-b', label: 'Direction B' },
+                { id: 'direction-c', label: 'Direction C' },
+              ],
+              response_schema: {
+                type: 'object',
+                required: ['direction_id'],
+                properties: { direction_id: { type: 'string' } },
+              },
+              allow_freeform: false,
+              response: { direction_id: 'direction-a' },
+            },
+          },
+        },
+        {
+          ...snapshot.runs[0],
+          run_id: 'experiment-run',
+          module_type: 'experiment',
+          label: 'Experiment candidate',
+          status: 'completed',
+          outputs: ['experiment-result'],
+          module_data: {
+            parent_run_id: 'research-run',
+            completion_summary: 'Validated result',
+            upstream_selection: { run_id: 'research-run', item_id: 'direction-a' },
+          },
+        },
+        {
+          ...snapshot.runs[0],
+          run_id: 'delivery-run',
+          module_type: 'delivery',
+          label: 'Delivery candidate',
+          status: 'completed',
+          outputs: ['delivery-report'],
+          module_data: {
+            parent_run_id: 'experiment-run',
+            output_path: 'result/exports/report.pdf',
+            upstream_selection: { run_id: 'experiment-run', item_id: 'experiment-result' },
+          },
+        },
+        {
+          ...snapshot.runs[0],
+          run_id: 'experiment-run-b',
+          module_type: 'experiment',
+          label: 'Alternative experiment candidate',
+          status: 'completed',
+          inputs: [{ artifact_id: 'research-bundle' }],
+          outputs: ['experiment-result-b'],
+          module_data: {
+            parent_run_id: 'research-run',
+            completion_summary: 'Alternative validated result',
+            upstream_selection: { run_id: 'research-run', item_id: 'direction-b' },
+          },
+        },
+        {
+          ...snapshot.runs[0],
+          run_id: 'delivery-run-b',
+          module_type: 'delivery',
+          label: 'Alternative delivery candidate',
+          status: 'completed',
+          inputs: [{ artifact_id: 'experiment-result-b' }],
+          outputs: ['delivery-report-b'],
+          module_data: {
+            parent_run_id: 'experiment-run-b',
+            output_path: 'result/exports/alternative.pdf',
+            upstream_selection: { run_id: 'experiment-run-b', item_id: 'experiment-result-b' },
+          },
+        },
+      ],
+    }
+    vi.mocked(fetchWorkflowSnapshot).mockResolvedValue(pipelineSnapshot)
+    vi.mocked(createWorkflowRun).mockResolvedValue({ run_id: 'experiment-branch', project_sequence: 7 })
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': pipelineSnapshot },
+      selectedRunByProject: { 'PRJ-1': 'research-run' },
+    })
+
+    render(<WorkflowWorkspace />)
+
+    expect(screen.getByRole('heading', { name: '1. Research' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '2. Experiment' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '3. Delivery' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Project overview' })).toHaveClass('flex-1', 'min-h-[32rem]')
+    expect(screen.getByRole('button', { name: 'Select candidate: Direction A' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Select candidate: Direction A' }).parentElement).toHaveClass(
+      'h-full',
+      'overflow-y-auto',
+    )
+    expect(screen.getByRole('button', { name: 'Select candidate: Validated result' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select candidate: report.pdf' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select candidate: Alternative validated result' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select candidate: Direction B' }))
+    expect(screen.getByRole('button', { name: 'Select candidate: Alternative validated result' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Select candidate: alternative.pdf' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('button', { name: 'Select candidate: Validated result' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select candidate: Direction C' }))
+    expect(useWorkflowStore.getState().selectedCandidateByProject['PRJ-1']?.initiation).toEqual({
+      runId: 'research-run',
+      itemId: 'direction-c',
+    })
+    expect(screen.getByText('This research item has no experiment branch yet.')).toBeInTheDocument()
+    expect(screen.getByText('Select an experiment item to load its delivery branch.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select candidate: Alternative validated result' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Continue to Experiment/ }))
+    expect(screen.getByText(/Selected “Direction C”/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Start and open module' }))
+
+    await waitFor(() => {
+      expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
+        moduleType: 'experiment',
+        inputs: [{ artifact_id: 'research-bundle' }],
+        moduleData: expect.objectContaining({
+          parent_run_id: 'research-run',
+          upstream_selection: {
+            module_type: 'initiation',
+            run_id: 'research-run',
+            item_id: 'direction-c',
+            label: 'Direction C',
+          },
+        }),
+      }))
+    })
   })
 })

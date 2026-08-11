@@ -136,4 +136,79 @@ describe('workflowStore', () => {
 
     expect(useWorkflowStore.getState().activityByRun['run-1']).toBe('read evidence.md')
   })
+
+  it('shares candidate choices across views and clears stale downstream selections', () => {
+    const store = useWorkflowStore.getState()
+    store.selectCandidate('PRJ-1', 'initiation', { runId: 'research-1', itemId: 'direction-a' })
+    store.selectCandidate('PRJ-1', 'experiment', { runId: 'experiment-1', itemId: 'result-a' })
+    store.selectCandidate('PRJ-1', 'delivery', { runId: 'delivery-1', itemId: 'report-a' })
+
+    store.selectCandidate('PRJ-1', 'initiation', { runId: 'research-1', itemId: 'direction-b' })
+
+    expect(useWorkflowStore.getState().selectedCandidateByProject['PRJ-1']).toEqual({
+      initiation: { runId: 'research-1', itemId: 'direction-b' },
+      experiment: null,
+      delivery: null,
+    })
+    expect(useWorkflowStore.getState().selectedRunByProject['PRJ-1']).toBe('research-1')
+  })
+
+  it('loads the existing downstream pipeline when an upstream candidate is selected', () => {
+    const researchRun = {
+      ...snapshot.runs[0],
+      run_id: 'research-1',
+      module_type: 'initiation' as const,
+      status: 'completed' as const,
+      outputs: ['research-bundle'],
+      module_data: {
+        research_result: {
+          directions: [
+            { id: 'direction-a', title: 'Direction A' },
+            { id: 'direction-b', title: 'Direction B' },
+          ],
+        },
+      },
+    }
+    const experimentRun = {
+      ...snapshot.runs[0],
+      run_id: 'experiment-b',
+      module_type: 'experiment' as const,
+      status: 'completed' as const,
+      inputs: [{ artifact_id: 'research-bundle' }],
+      outputs: ['result-b'],
+      module_data: {
+        parent_run_id: 'research-1',
+        upstream_selection: { run_id: 'research-1', item_id: 'direction-b' },
+      },
+    }
+    const deliveryRun = {
+      ...snapshot.runs[0],
+      run_id: 'delivery-b',
+      module_type: 'delivery' as const,
+      status: 'completed' as const,
+      inputs: [{ artifact_id: 'result-b' }],
+      outputs: ['report-b'],
+      module_data: {
+        parent_run_id: 'experiment-b',
+        upstream_selection: { run_id: 'experiment-b', item_id: 'result-b' },
+      },
+    }
+    useWorkflowStore.setState({
+      snapshots: {
+        'PRJ-1': { ...snapshot, runs: [researchRun, experimentRun, deliveryRun] },
+      },
+    })
+
+    useWorkflowStore.getState().selectCandidate(
+      'PRJ-1',
+      'initiation',
+      { runId: 'research-1', itemId: 'direction-b' },
+    )
+
+    expect(useWorkflowStore.getState().selectedCandidateByProject['PRJ-1']).toEqual({
+      initiation: { runId: 'research-1', itemId: 'direction-b' },
+      experiment: { runId: 'experiment-b', itemId: 'result-b' },
+      delivery: { runId: 'delivery-b', itemId: 'report-b' },
+    })
+  })
 })

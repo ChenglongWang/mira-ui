@@ -104,8 +104,9 @@ describe('ModuleStageControls', () => {
   })
 
   it('continues to Delivery inside the module page with one of the four legacy formats', async () => {
-    const run = makeRun()
+    const run = makeRun({ module_type: 'experiment' })
     const snapshot = makeSnapshot(run)
+    useProjectStore.setState({ activeStage: 'experiment' })
     useWorkflowStore.setState({
       snapshots: { 'PRJ-1': snapshot },
       selectedRunByProject: { 'PRJ-1': run.run_id },
@@ -117,6 +118,7 @@ describe('ModuleStageControls', () => {
     })
 
     render(<ModuleStageControls />)
+    fireEvent.click(screen.getByRole('button', { name: 'Select candidate: 2. artifact-2' }))
     fireEvent.click(screen.getByRole('button', { name: /Delivery/ }))
 
     expect(screen.getByRole('dialog')).toBeInTheDocument()
@@ -135,13 +137,19 @@ describe('ModuleStageControls', () => {
       expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', {
         moduleType: 'delivery',
         enqueue: true,
-        inputs: [{ artifact_id: 'artifact-1' }, { artifact_id: 'artifact-2' }],
+        inputs: [{ artifact_id: 'artifact-2' }],
         moduleData: {
           delivery_format: 'paper_article',
           intent: 'Prepare the manuscript for journal submission',
           output_path: 'result/exports/journal_article.docx',
           output_type: 'article_docx',
           parent_run_id: 'source-run',
+          upstream_selection: {
+            module_type: 'experiment',
+            run_id: 'source-run',
+            item_id: 'artifact-2',
+            label: '2. artifact-2',
+          },
         },
       })
     })
@@ -151,6 +159,40 @@ describe('ModuleStageControls', () => {
       workflow_module_type: 'delivery',
     }))
     expect(useProjectStore.getState().activeStage).toBe('result')
+  })
+
+  it('collapses and expands the module candidate outputs with one click', () => {
+    const run = makeRun()
+    const snapshot = makeSnapshot(run)
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': snapshot },
+      selectedRunByProject: { 'PRJ-1': run.run_id },
+    })
+
+    render(<ModuleStageControls />)
+
+    const collapse = screen.getByRole('button', { name: 'Collapse candidate outputs' })
+    expect(collapse).toHaveAttribute('aria-expanded', 'true')
+    expect(collapse).toHaveAttribute('aria-controls', 'module-candidate-output-list')
+    expect(screen.getByRole('button', { name: 'Select candidate: 1. artifact-1' })).toBeInTheDocument()
+    expect(screen.getByText('Next: continue from this result')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Experiment/ })).toBeInTheDocument()
+
+    fireEvent.click(collapse)
+
+    const expand = screen.getByRole('button', { name: 'Expand candidate outputs' })
+    expect(expand).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('2 candidates')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Select candidate: 1. artifact-1' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Next: continue from this result')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Experiment/ })).not.toBeInTheDocument()
+
+    fireEvent.click(expand)
+
+    expect(screen.getByRole('button', { name: 'Collapse candidate outputs' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Select candidate: 1. artifact-1' })).toBeInTheDocument()
+    expect(screen.getByText('Next: continue from this result')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Experiment/ })).toBeInTheDocument()
   })
 
   it('renders and submits structured interaction directly in the module center column', async () => {
@@ -185,6 +227,10 @@ describe('ModuleStageControls', () => {
 
     render(<ModuleStageControls />)
     fireEvent.click(screen.getByRole('button', { name: 'Direction B' }))
+    expect(useWorkflowStore.getState().selectedCandidateByProject['PRJ-1']?.initiation).toEqual({
+      runId: 'source-run',
+      itemId: 'direction-b',
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm and continue' }))
 
     await waitFor(() => {

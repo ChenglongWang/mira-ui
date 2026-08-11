@@ -1,10 +1,21 @@
 import { create } from 'zustand'
 
 import { commandWorkflowProject, commandWorkflowRun, createWorkflowRun, fetchWorkflowSnapshot } from '@/services/api'
+import {
+  buildWorkflowCandidates,
+  resolveWorkflowCandidate,
+  workflowRunsForUpstreamCandidate,
+  type WorkflowCandidateItem,
+  type WorkflowCandidateSelection,
+} from '@/lib/workflowCandidates'
 import type { WorkflowModuleType, WorkflowSnapshot, WorkflowSocketMessage } from '@/types'
 
 function isGenericActivityPing(summary: string): boolean {
   return /^mira is working(?:\.\.\.)?$/i.test(summary.trim())
+}
+
+function selectionFor(candidate: WorkflowCandidateItem | null): WorkflowCandidateSelection | null {
+  return candidate ? { runId: candidate.runId, itemId: candidate.itemId } : null
 }
 
 interface WorkflowState {
@@ -13,6 +24,10 @@ interface WorkflowState {
   errorByProject: Record<string, string | null>
   activityByRun: Record<string, string | undefined>
   selectedRunByProject: Record<string, string | null | undefined>
+  selectedCandidateByProject: Record<
+    string,
+    Partial<Record<WorkflowModuleType, WorkflowCandidateSelection | null>> | undefined
+  >
   loadProject: (projectId: string) => Promise<void>
   createRun: (
     projectId: string,
@@ -28,6 +43,11 @@ interface WorkflowState {
   commandRun: (projectId: string, runId: string, commandType: string, payload?: Record<string, unknown>) => Promise<void>
   setHandoffMode: (projectId: string, mode: 'manual' | 'auto') => Promise<void>
   selectRun: (projectId: string, runId: string) => void
+  selectCandidate: (
+    projectId: string,
+    moduleType: WorkflowModuleType,
+    selection: WorkflowCandidateSelection,
+  ) => void
   handleSocketMessage: (message: WorkflowSocketMessage) => void
   cursorFor: (projectId: string) => number
   removeProject: (projectId: string) => void
@@ -40,6 +60,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   errorByProject: {},
   activityByRun: {},
   selectedRunByProject: {},
+  selectedCandidateByProject: {},
 
   loadProject: async (projectId) => {
     set((state) => ({
@@ -87,9 +108,23 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
       inputs: options?.inputArtifactIds?.map((artifact_id) => ({ artifact_id })),
       enqueue: options?.enqueue,
     })
-    set((state) => ({
-      selectedRunByProject: { ...state.selectedRunByProject, [projectId]: receipt.run_id },
-    }))
+    set((state) => {
+      const candidates = { ...state.selectedCandidateByProject[projectId] }
+      candidates[moduleType] = { runId: receipt.run_id, itemId: receipt.run_id }
+      if (moduleType === 'initiation' || moduleType === 'planning') {
+        candidates.experiment = null
+        candidates.delivery = null
+      } else if (moduleType === 'experiment') {
+        candidates.delivery = null
+      }
+      return {
+        selectedRunByProject: { ...state.selectedRunByProject, [projectId]: receipt.run_id },
+        selectedCandidateByProject: {
+          ...state.selectedCandidateByProject,
+          [projectId]: candidates,
+        },
+      }
+    })
     await get().loadProject(projectId)
     return receipt.run_id
   },
@@ -113,6 +148,62 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   selectRun: (projectId, runId) => set((state) => ({
     selectedRunByProject: { ...state.selectedRunByProject, [projectId]: runId },
   })),
+
+  selectCandidate: (projectId, moduleType, selection) => set((state) => {
+    const current = { ...state.selectedCandidateByProject[projectId] }
+    current[moduleType] = selection
+    const runs = state.snapshots[projectId]?.runs ?? []
+    const sourceCandidate = resolveWorkflowCandidate(
+      buildWorkflowCandidates(runs, moduleType),
+      selection,
+    )
+
+    // Switch the downstream columns to this candidate's existing branch. If
+    // no matching Run exists, keep the stage deliberately blank until the
+    // user continues and creates one.
+    if (moduleType === 'initiation' || moduleType === 'planning') {
+      const experimentCandidates = sourceCandidate
+        ? buildWorkflowCandidates(
+            workflowRunsForUpstreamCandidate(runs, 'experiment', sourceCandidate),
+            'experiment',
+          )
+        : []
+      const experimentCandidate = resolveWorkflowCandidate(
+        experimentCandidates,
+        current.experiment ?? undefined,
+      )
+      current.experiment = selectionFor(experimentCandidate)
+
+      const deliveryCandidates = experimentCandidate
+        ? buildWorkflowCandidates(
+            workflowRunsForUpstreamCandidate(runs, 'delivery', experimentCandidate),
+            'delivery',
+          )
+        : []
+      current.delivery = selectionFor(resolveWorkflowCandidate(
+        deliveryCandidates,
+        current.delivery ?? undefined,
+      ))
+    } else if (moduleType === 'experiment') {
+      const deliveryCandidates = sourceCandidate
+        ? buildWorkflowCandidates(
+            workflowRunsForUpstreamCandidate(runs, 'delivery', sourceCandidate),
+            'delivery',
+          )
+        : []
+      current.delivery = selectionFor(resolveWorkflowCandidate(
+        deliveryCandidates,
+        current.delivery ?? undefined,
+      ))
+    }
+    return {
+      selectedRunByProject: { ...state.selectedRunByProject, [projectId]: selection.runId },
+      selectedCandidateByProject: {
+        ...state.selectedCandidateByProject,
+        [projectId]: current,
+      },
+    }
+  }),
 
   handleSocketMessage: (message) => {
     if (message.message_type === 'workflow_event' && message.project_id) {
@@ -147,13 +238,26 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     const loadingByProject = { ...state.loadingByProject }
     const errorByProject = { ...state.errorByProject }
     const selectedRunByProject = { ...state.selectedRunByProject }
+    const selectedCandidateByProject = { ...state.selectedCandidateByProject }
     delete snapshots[projectId]
     delete loadingByProject[projectId]
     delete errorByProject[projectId]
     delete selectedRunByProject[projectId]
-    return { snapshots, loadingByProject, errorByProject, selectedRunByProject }
+    delete selectedCandidateByProject[projectId]
+    return {
+      snapshots,
+      loadingByProject,
+      errorByProject,
+      selectedRunByProject,
+      selectedCandidateByProject,
+    }
   }),
   clear: () => set({
-    snapshots: {}, loadingByProject: {}, errorByProject: {}, activityByRun: {}, selectedRunByProject: {},
+    snapshots: {},
+    loadingByProject: {},
+    errorByProject: {},
+    activityByRun: {},
+    selectedRunByProject: {},
+    selectedCandidateByProject: {},
   }),
 }))

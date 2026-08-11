@@ -23,6 +23,12 @@ import {
 } from '@/lib/exportRequests'
 import { importWorkflowArtifact } from '@/services/api'
 import { wsClient } from '@/services/websocket'
+import {
+  buildWorkflowCandidates,
+  resolveWorkflowCandidate,
+  type WorkflowCandidateItem,
+} from '@/lib/workflowCandidates'
+import { PipelineOverview } from './PipelineOverview'
 
 const MODULES: Array<{
   type: WorkflowModuleType
@@ -253,6 +259,9 @@ export function WorkflowWorkspace() {
   const activityByRun = useWorkflowStore((state) => state.activityByRun)
   const createRun = useWorkflowStore((state) => state.createRun)
   const selectRun = useWorkflowStore((state) => state.selectRun)
+  const candidateSelections = useWorkflowStore((state) => (
+    projectId ? state.selectedCandidateByProject[projectId] : undefined
+  ))
   const setHandoffMode = useWorkflowStore((state) => state.setHandoffMode)
   const [creating, setCreating] = useState<WorkflowModuleType | null>(null)
   const [policyPending, setPolicyPending] = useState(false)
@@ -260,6 +269,9 @@ export function WorkflowWorkspace() {
   const [continuationSource, setContinuationSource] = useState<{
     parentRunId: string
     inputArtifactIds: string[]
+    moduleType: WorkflowModuleType
+    itemId: string
+    label: string
   } | null>(null)
   const [runIntent, setRunIntent] = useState('')
   const [literatureResearchEnabled, setLiteratureResearchEnabled] = useState(true)
@@ -278,16 +290,43 @@ export function WorkflowWorkspace() {
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId) ?? null,
     [selectedRunId, snapshot?.runs],
   )
+  const selectedRunCandidates = useMemo(
+    () => selectedRun && snapshot
+      ? buildWorkflowCandidates(snapshot.runs, selectedRun.module_type)
+      : [],
+    [selectedRun, snapshot],
+  )
+  const selectedRunCandidate = selectedRun
+    ? resolveWorkflowCandidate(
+        selectedRunCandidates,
+        candidateSelections?.[selectedRun.module_type],
+        selectedRunId,
+      )
+    : null
+  const mustSelectRunCandidate = selectedRunCandidates.length > 1 && !selectedRunCandidate
+  const nextSelectedModule = selectedRun ? NEXT_MODULE[selectedRun.module_type] : undefined
   if (!projectId) return null
 
-  const beginModule = (moduleType: WorkflowModuleType, sourceRun?: WorkflowRun) => {
+  const beginModule = (
+    moduleType: WorkflowModuleType,
+    sourceRun?: WorkflowRun,
+    sourceCandidate?: WorkflowCandidateItem,
+  ) => {
     setStartingModule(moduleType)
     setContinuationSource(sourceRun
-      ? { parentRunId: sourceRun.run_id, inputArtifactIds: sourceRun.outputs }
+      ? {
+          parentRunId: sourceCandidate?.runId ?? sourceRun.run_id,
+          inputArtifactIds: sourceCandidate?.artifactIds.length
+            ? sourceCandidate.artifactIds
+            : sourceRun.outputs,
+          moduleType: sourceRun.module_type,
+          itemId: sourceCandidate?.itemId ?? sourceRun.run_id,
+          label: sourceCandidate?.label ?? sourceRun.label,
+        }
       : null)
     const continuationIntent = lang === 'zh'
-      ? `基于上游模块结果继续${moduleMeta(moduleType).zh}。`
-      : `Continue with ${moduleMeta(moduleType).en.toLowerCase()} using the upstream module results.`
+      ? `基于上游候选“${sourceCandidate?.label ?? sourceRun?.label ?? ''}”继续${moduleMeta(moduleType).zh}。`
+      : `Continue with ${moduleMeta(moduleType).en.toLowerCase()} using the upstream candidate “${sourceCandidate?.label ?? sourceRun?.label ?? ''}”.`
     setRunIntent(sourceRun ? continuationIntent : (task?.coreQuestion?.trim() ?? ''))
     setLiteratureResearchEnabled(true)
     setSelectedLiteratureSources(DEFAULT_LITERATURE_SOURCES)
@@ -362,6 +401,14 @@ export function WorkflowWorkspace() {
     }
 
     const moduleData: Record<string, unknown> = {}
+    if (continuationSource) {
+      moduleData.upstream_selection = {
+        module_type: continuationSource.moduleType,
+        run_id: continuationSource.parentRunId,
+        item_id: continuationSource.itemId,
+        label: continuationSource.label,
+      }
+    }
     if (startingModule === 'initiation') {
       if (literatureResearchEnabled && selectedLiteratureSources.length === 0) {
         setStartError(
@@ -494,18 +541,8 @@ export function WorkflowWorkspace() {
 
   return (
     <div className="h-full overflow-y-auto bg-[var(--color-bg-primary)]">
-      <div className="mx-auto max-w-6xl space-y-6 p-6">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-[var(--color-text-primary)]">
-            {lang === 'zh' ? '从任意模块开始' : 'Start from any module'}
-            </h2>
-            <p className="mt-1 text-sm text-[var(--color-text-muted)]">
-            {lang === 'zh'
-              ? '每次启动都会创建独立的 ModuleRun；同一模块可重复运行和形成分支。'
-              : 'Each start creates an independent ModuleRun. Repeat modules freely to form branches.'}
-            </p>
-          </div>
+      <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-6 p-6">
+        <div className="flex justify-end">
           {snapshot && (
             <label className="flex items-center gap-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">
               <span>{lang === 'zh' ? '模块完成后' : 'After completion'}</span>
@@ -526,28 +563,21 @@ export function WorkflowWorkspace() {
           )}
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {MODULES.map((module) => (
-            <button
-              key={module.type}
-              type="button"
-              disabled={creating !== null || snapshot?.workflow.status === 'archived'}
-              onClick={() => beginModule(module.type)}
-              className="min-h-40 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-4 text-left transition hover:border-[var(--color-accent)]/60 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-            >
-              <div className="text-2xl">{module.icon}</div>
-              <div className="mt-3 text-sm font-semibold text-[var(--color-text-primary)]">
-                {lang === 'zh' ? module.zh : module.en}
-              </div>
-              <div className="mt-1 text-xs leading-relaxed text-[var(--color-text-muted)]">
-                {lang === 'zh' ? module.zhDescription : module.enDescription}
-              </div>
-              <div className="mt-3 text-xs font-medium text-[var(--color-accent)]">
-                {lang === 'zh' ? '启动模块 →' : 'Start module →'}
-              </div>
-            </button>
-          ))}
-        </div>
+        <PipelineOverview
+          projectId={projectId}
+          runs={snapshot?.runs ?? []}
+          disabled={creating !== null || snapshot?.workflow.status === 'archived'}
+          onStartModule={(moduleType) => beginModule(moduleType)}
+          onContinue={(moduleType, candidate) => {
+            const sourceRun = snapshot?.runs.find((run) => run.run_id === candidate.runId)
+            if (sourceRun) beginModule(moduleType, sourceRun, candidate)
+          }}
+          onOpen={(candidate) => {
+            selectRun(projectId, candidate.runId)
+            setActiveStage(MODULE_STAGE[candidate.moduleType])
+          }}
+        />
+      </div>
 
         {startingModule && (
           <div
@@ -611,8 +641,8 @@ export function WorkflowWorkspace() {
                   </div>
                   <div className="mt-1">
                     {lang === 'zh'
-                      ? `将继承 ${continuationSource.inputArtifactIds.length} 个产物；确认后立即启动执行。`
-                      : `Inherits ${continuationSource.inputArtifactIds.length} artifact(s) and starts execution immediately after confirmation.`}
+                      ? `已选择“${continuationSource.label}”，将继承 ${continuationSource.inputArtifactIds.length} 个产物；确认后立即启动执行。`
+                      : `Selected “${continuationSource.label}”. Inherits ${continuationSource.inputArtifactIds.length} artifact(s) and starts execution immediately after confirmation.`}
                   </div>
                 </div>
               )}
@@ -873,6 +903,7 @@ export function WorkflowWorkspace() {
           </div>
         )}
 
+      <div className="mx-auto max-w-6xl space-y-6 px-6 pb-6">
         {error && (
           <div className="rounded-lg border border-[var(--color-danger)]/30 bg-[var(--color-danger)]/5 p-3 text-xs text-[var(--color-danger)]">
             {error}
@@ -994,23 +1025,32 @@ export function WorkflowWorkspace() {
 
                 <RunControls projectId={projectId} run={selectedRun} onStartRun={startExistingRun} />
 
-                {selectedRun.status === 'completed' && (
+                {selectedRun.status === 'completed' && nextSelectedModule && (
                   <div>
                     <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">
                       {lang === 'zh' ? '从此结果继续（创建新分支）' : 'Continue from this result (new branch)'}
                     </div>
+                    {mustSelectRunCandidate && (
+                      <div className="mb-2 text-[10px] text-amber-600">
+                        {lang === 'zh'
+                          ? '请先在上方 Pipeline 中选择一个候选 item。'
+                          : 'Select one candidate item in the pipeline above first.'}
+                      </div>
+                    )}
                     <div className="flex flex-wrap gap-2">
-                      {MODULES.map((module) => (
-                        <button
-                          key={module.type}
-                          type="button"
-                          disabled={creating !== null}
-                          onClick={() => beginModule(module.type, selectedRun)}
-                          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-                        >
-                          {module.icon} {lang === 'zh' ? module.zh : module.en}
-                        </button>
-                      ))}
+                      <button
+                        type="button"
+                        disabled={creating !== null || mustSelectRunCandidate}
+                        onClick={() => beginModule(
+                          nextSelectedModule,
+                          selectedRun,
+                          selectedRunCandidate ?? undefined,
+                        )}
+                        className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                      >
+                        {moduleMeta(nextSelectedModule).icon}{' '}
+                        {lang === 'zh' ? moduleMeta(nextSelectedModule).zh : moduleMeta(nextSelectedModule).en}
+                      </button>
                     </div>
                   </div>
                 )}

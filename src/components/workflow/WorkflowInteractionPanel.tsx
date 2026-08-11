@@ -16,9 +16,12 @@ export function WorkflowInteractionPanel({
   run: WorkflowRun
 }) {
   const commandRun = useWorkflowStore((state) => state.commandRun)
+  const candidateSelection = useWorkflowStore((state) => (
+    state.selectedCandidateByProject[projectId]?.[run.module_type]
+  ))
+  const selectCandidate = useWorkflowStore((state) => state.selectCandidate)
   const lang = useSettingsStore((state) => state.language)
   const interaction = run.module_data.interaction as WorkflowInteraction | undefined
-  const [selected, setSelected] = useState<unknown>(undefined)
   const [freeform, setFreeform] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -30,9 +33,15 @@ export function WorkflowInteractionPanel({
   const choiceLabel = (choice: Record<string, unknown>) => String(
     choice.label ?? choice.title ?? choice.name ?? choiceValue(choice) ?? '',
   )
+  const selectedItemId = candidateSelection?.runId === run.run_id
+    ? candidateSelection.itemId
+    : undefined
+  const selectedChoice = interaction.choices.find(
+    (choice) => String(choiceValue(choice)) === selectedItemId,
+  )
   const buildResponse = () => {
     const schema = interaction.response_schema
-    const value = selected ?? freeform.trim()
+    const value = selectedChoice ? choiceValue(selectedChoice) : freeform.trim()
     if (schema.type !== 'object') return value
     const required = Array.isArray(schema.required)
       ? schema.required.filter((item): item is string => typeof item === 'string')
@@ -41,14 +50,14 @@ export function WorkflowInteractionPanel({
     const response: Record<string, unknown> = { [primary]: value }
     const properties = schema.properties
     if (
-      selected !== undefined
+      selectedChoice !== undefined
       && freeform.trim()
       && primary !== 'notes'
       && properties && typeof properties === 'object' && 'notes' in properties
     ) response.notes = freeform.trim()
     return response
   }
-  const canSubmit = selected !== undefined || (interaction.allow_freeform && freeform.trim().length > 0)
+  const canSubmit = selectedChoice !== undefined || (interaction.allow_freeform && freeform.trim().length > 0)
 
   return (
     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
@@ -58,12 +67,16 @@ export function WorkflowInteractionPanel({
         <div className="mt-3 grid gap-2">
           {interaction.choices.map((choice, index) => {
             const value = choiceValue(choice)
-            const active = selected === value
+            const itemId = String(value)
+            const active = selectedItemId === itemId
             return (
               <button
                 key={String(choice.id ?? index)}
                 type="button"
-                onClick={() => setSelected(value)}
+                onClick={() => selectCandidate(projectId, run.module_type, {
+                  runId: run.run_id,
+                  itemId,
+                })}
                 className={cn(
                   'rounded-lg border px-3 py-2 text-left text-xs',
                   active

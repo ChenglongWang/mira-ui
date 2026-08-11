@@ -13,6 +13,8 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useWorkflowStore } from '@/stores/workflowStore'
 import type { PipelineStage, WorkflowModuleType, WorkflowRun } from '@/types'
+import { buildWorkflowCandidates, resolveWorkflowCandidate } from '@/lib/workflowCandidates'
+import { WorkflowCandidateList } from './WorkflowCandidateList'
 import { WorkflowInteractionPanel } from './WorkflowInteractionPanel'
 
 const MODULE_META: Record<WorkflowModuleType, {
@@ -28,8 +30,8 @@ const MODULE_META: Record<WorkflowModuleType, {
 }
 
 const DOWNSTREAM_MODULES: Record<WorkflowModuleType, WorkflowModuleType[]> = {
-  initiation: ['experiment', 'delivery'],
-  planning: ['experiment', 'delivery'],
+  initiation: ['experiment'],
+  planning: ['experiment'],
   experiment: ['delivery'],
   delivery: [],
 }
@@ -74,16 +76,33 @@ export function ModuleStageControls() {
   const selectedRunId = useWorkflowStore((state) => (
     projectId ? state.selectedRunByProject[projectId] : null
   ))
+  const candidateSelections = useWorkflowStore((state) => (
+    projectId ? state.selectedCandidateByProject[projectId] : undefined
+  ))
   const createRun = useWorkflowStore((state) => state.createRun)
   const selectedRun = useMemo(
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId),
     [selectedRunId, snapshot?.runs],
   )
+  const moduleCandidates = useMemo(
+    () => selectedRun && snapshot
+      ? buildWorkflowCandidates(snapshot.runs, selectedRun.module_type)
+      : [],
+    [selectedRun, snapshot],
+  )
+  const selectedCandidate = selectedRun
+    ? resolveWorkflowCandidate(
+        moduleCandidates,
+        candidateSelections?.[selectedRun.module_type],
+        selectedRunId,
+      )
+    : null
   const [targetModule, setTargetModule] = useState<WorkflowModuleType | null>(null)
   const [intent, setIntent] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [candidateListCollapsed, setCandidateListCollapsed] = useState(false)
 
   if (
     !projectId
@@ -96,18 +115,15 @@ export function ModuleStageControls() {
   const interactionVisible = Boolean(selectedRun.status === 'waiting_input'
     && selectedRun.module_data.interaction
     && typeof selectedRun.module_data.interaction === 'object')
-
-  if (!interactionVisible && (selectedRun.status !== 'completed' || downstream.length === 0)) {
-    return null
-  }
+  const mustSelectCandidate = moduleCandidates.length > 1 && !selectedCandidate
 
   const openTarget = (moduleType: WorkflowModuleType) => {
     const label = lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en.toLowerCase()
     setTargetModule(moduleType)
     setIntent(
       lang === 'zh'
-        ? `基于上游模块结果继续${label}。`
-        : `Continue with ${label} using the upstream module results.`,
+        ? `基于上游候选“${selectedCandidate?.label ?? selectedRun.label}”继续${label}。`
+        : `Continue with ${label} using the selected upstream candidate “${selectedCandidate?.label ?? selectedRun.label}”.`,
     )
     setDeliveryFormat(null)
     setError(null)
@@ -141,6 +157,14 @@ export function ModuleStageControls() {
     }
 
     const moduleData: Record<string, unknown> = {}
+    if (selectedCandidate) {
+      moduleData.upstream_selection = {
+        module_type: selectedRun.module_type,
+        run_id: selectedCandidate.runId,
+        item_id: selectedCandidate.itemId,
+        label: selectedCandidate.label,
+      }
+    }
     if (targetModule === 'delivery' && deliveryFormat) {
       const config = getExportConfig(deliveryFormat)
       moduleData.delivery_format = deliveryFormat
@@ -153,8 +177,10 @@ export function ModuleStageControls() {
       const runId = await createRun(projectId, targetModule, normalizedIntent, {
         enqueue: true,
         moduleData,
-        inputArtifactIds: selectedRun.outputs,
-        parentRunId: selectedRun.run_id,
+        inputArtifactIds: selectedCandidate?.artifactIds.length
+          ? selectedCandidate.artifactIds
+          : selectedRun.outputs,
+        parentRunId: selectedCandidate?.runId ?? selectedRun.run_id,
       })
       const prompt = startPromptFor(task, targetModule, normalizedIntent, deliveryFormat)
       const conversationId = `${projectId}:run:${runId}`
@@ -194,8 +220,71 @@ export function ModuleStageControls() {
   }
 
   return (
-    <div className="max-h-[45vh] shrink-0 overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] px-6 py-4">
+    <div className={`max-h-[45vh] shrink-0 overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] px-6 ${candidateListCollapsed ? 'py-2' : 'py-4'}`}>
       <div className="mx-auto max-w-2xl">
+        {snapshot && moduleCandidates.length > 0 && (
+          <div className={candidateListCollapsed ? (interactionVisible ? 'mb-2' : '') : 'mb-4'}>
+            <div className={`flex items-center justify-between gap-3 ${candidateListCollapsed ? '' : 'mb-2'}`}>
+              <div className="flex min-w-0 items-center gap-2">
+                <div className="text-xs font-medium text-[var(--color-text-secondary)]">
+                  {lang === 'zh' ? '本模块候选交付物' : 'Candidate outputs in this module'}
+                </div>
+                {candidateListCollapsed && (
+                  <div className="truncate text-[10px] text-[var(--color-text-muted)]">
+                    {lang === 'zh'
+                      ? `${moduleCandidates.length} 个候选${selectedCandidate ? ` · 已选择：${selectedCandidate.label}` : ''}`
+                      : `${moduleCandidates.length} candidate${moduleCandidates.length === 1 ? '' : 's'}${selectedCandidate ? ` · Selected: ${selectedCandidate.label}` : ''}`}
+                  </div>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                {!candidateListCollapsed && (
+                  <div className="text-[10px] text-[var(--color-text-muted)]">
+                    {lang === 'zh' ? '与项目总览同步' : 'Synced with project overview'}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  aria-expanded={!candidateListCollapsed}
+                  aria-controls="module-candidate-output-list"
+                  aria-label={lang === 'zh'
+                    ? (candidateListCollapsed ? '展开候选交付物' : '折叠候选交付物')
+                    : (candidateListCollapsed ? 'Expand candidate outputs' : 'Collapse candidate outputs')}
+                  title={lang === 'zh'
+                    ? (candidateListCollapsed ? '展开' : '折叠')
+                    : (candidateListCollapsed ? 'Expand' : 'Collapse')}
+                  onClick={() => setCandidateListCollapsed((collapsed) => !collapsed)}
+                  className="flex h-6 items-center gap-1 rounded-md border border-[var(--color-border)] px-1.5 text-[10px] font-bold text-[var(--color-text-muted)] transition hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-secondary)]"
+                >
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 16 16"
+                    className={`h-3 w-3 transition-transform ${candidateListCollapsed ? '-rotate-90' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.75"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="m4 6 4 4 4-4" />
+                  </svg>
+                  {lang === 'zh'
+                    ? (candidateListCollapsed ? '展开' : '收起')
+                    : (candidateListCollapsed ? 'Expand' : 'Collapse')}
+                </button>
+              </div>
+            </div>
+            <div id="module-candidate-output-list" hidden={candidateListCollapsed}>
+              <WorkflowCandidateList
+                projectId={projectId}
+                moduleType={selectedRun.module_type}
+                runs={snapshot.runs}
+                compact
+              />
+            </div>
+          </div>
+        )}
+
         {interactionVisible && (
           <WorkflowInteractionPanel
             key={String((selectedRun.module_data.interaction as { interaction_id?: unknown }).interaction_id ?? selectedRun.run_id)}
@@ -204,18 +293,26 @@ export function ModuleStageControls() {
           />
         )}
 
-        {selectedRun.status === 'completed' && downstream.length > 0 && (
+        {!candidateListCollapsed && selectedRun.status === 'completed' && downstream.length > 0 && (
           <div className={interactionVisible ? 'mt-4' : ''}>
             <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">
               {lang === 'zh' ? '下一步：从当前结果继续' : 'Next: continue from this result'}
             </div>
+            {mustSelectCandidate && (
+              <div className="mb-2 text-[10px] text-amber-600">
+                {lang === 'zh'
+                  ? '请先从上方候选列表选择一个 item。'
+                  : 'Select one item from the candidate list above first.'}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {downstream.map((moduleType) => (
                 <button
                   key={moduleType}
                   type="button"
+                  disabled={mustSelectCandidate}
                   onClick={() => openTarget(moduleType)}
-                  className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)]"
+                  className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {MODULE_META[moduleType].icon}{' '}
                   {lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en}
