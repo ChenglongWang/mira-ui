@@ -67,7 +67,7 @@ interface ProjectState {
   deleteTask: (id: string, deleteFiles?: boolean) => Promise<boolean>
   duplicateTask: (id: string) => void
   createProject: (input: NewProjectInput) => Promise<string>
-  createProjectShell: (displayName: string) => Promise<string>
+  createProjectShell: (displayName: string, options?: Pick<NewProjectInput, 'projectId' | 'projectParentDir' | 'allowExistingDir'>) => Promise<string>
   loadProjects: (options?: { replaceMissing?: boolean; refreshAll?: boolean }) => Promise<void>
   resetWorkspaceState: () => void
 }
@@ -555,6 +555,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
       displayName: input.displayName ?? input.title,
       projectParentDir: input.projectParentDir,
       projectDir: input.projectDir,
+      allowExistingDir: input.allowExistingDir,
       runMode: mode,
       agentProfile,
       contractVersion,
@@ -586,7 +587,7 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     }
     await clearAgentLogs(id)
     set((state) => ({
-      tasks: [task, ...state.tasks],
+      tasks: [task, ...state.tasks.filter((existing) => existing.id !== id)],
       appMode: 'project',
       selectedTaskId: id,
       selectedExpId: null,
@@ -598,8 +599,10 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     return id
   },
 
-  createProjectShell: async (displayName) => get().createProject({
-    projectId: newProjectSessionId(),
+  createProjectShell: async (displayName, options) => get().createProject({
+    projectId: options?.projectId ?? newProjectSessionId(),
+    projectParentDir: options?.projectParentDir,
+    allowExistingDir: options?.allowExistingDir,
     displayName,
     description: '',
   }),

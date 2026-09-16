@@ -490,6 +490,7 @@ export interface InitiationResearchResult extends ResearchData {
 }
 
 export interface NewProjectInput {
+  allowExistingDir?: boolean
   projectId?: string
   displayName?: string
   projectParentDir?: string

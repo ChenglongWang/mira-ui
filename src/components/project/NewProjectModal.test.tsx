@@ -234,10 +234,13 @@ describe('NewProjectModal', () => {
     expect(screen.queryByText('dataset/tables/a.csv')).not.toBeInTheDocument()
   })
 
-  it('deletes the remote project when file upload fails during creation', async () => {
+  it.each([false, true])('cleans up a failed upload without deleting pre-existing files (reuse=%s)', async (reuse) => {
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/projects') && init?.method === 'POST') {
+        if (reuse && !JSON.parse(String(init.body)).allow_existing_dir) {
+          return new Response(JSON.stringify({code: 'project_directory_exists', project_dir: '/tmp/projects/upload-fails'}), {status: 409})
+        }
         return new Response(
           JSON.stringify({
             id: 'upload-fails',
@@ -256,6 +259,9 @@ describe('NewProjectModal', () => {
           JSON.stringify({ error: 'upload failed' }),
           { status: 500, headers: { 'Content-Type': 'application/json' } },
         )
+      }
+      if (url.endsWith('/projects/upload-fails/remove') && init?.method === 'POST') {
+        return new Response(JSON.stringify({ removed: true }), { status: 200 })
       }
       if (url.endsWith('/projects?session_id=upload-fails') && init?.method === 'DELETE') {
         return new Response(
@@ -295,13 +301,20 @@ describe('NewProjectModal', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
 
+    if (reuse) {
+      expect(await screen.findByRole('alert')).toHaveTextContent('already exists')
+      fireEvent.click(screen.getByRole('button', { name: 'Create in Existing Directory' }))
+    }
     expect(await screen.findByText('upload failed')).toBeInTheDocument()
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        expect.stringContaining('/projects?session_id=upload-fails'),
-        { method: 'DELETE' },
+        expect.stringContaining(reuse ? '/projects/upload-fails/remove' : '/projects?session_id=upload-fails'),
+        { method: reuse ? 'POST' : 'DELETE' },
       )
     })
+    if (reuse) {
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false)
+    }
     const createCall = fetchMock.mock.calls.find(([input, init]) => (
       String(input).endsWith('/projects') && init?.method === 'POST'
     ))

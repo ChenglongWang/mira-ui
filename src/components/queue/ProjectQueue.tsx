@@ -7,6 +7,7 @@ import type { Language } from '@/stores/settingsStore'
 import { wsClient } from '@/services/websocket'
 import type { Stats } from '@/types'
 import { QueueItem } from './QueueItem'
+import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { ChatItem } from './ChatItem'
 import { FolderRow } from './FolderRow'
 import { cn } from '@/lib/utils'
@@ -30,7 +31,6 @@ export function ProjectQueue() {
     renameTask,
     deleteTask,
     duplicateTask,
-    createProjectShell,
     refreshPlan,
     stats,
   } = useProjectStore()
@@ -65,7 +65,7 @@ export function ProjectQueue() {
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [folderDraft, setFolderDraft] = useState('')
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
-  const [creatingProject, setCreatingProject] = useState(false)
+  const [createProjectOpen, setCreateProjectOpen] = useState(false)
   useEffect(() => {
     setTab(isChatActive ? 'chats' : 'projects')
   }, [isChatActive])
@@ -121,23 +121,6 @@ export function ProjectQueue() {
       return
     }
     setAppMode('project')
-  }
-
-  const handleCreateProject = async () => {
-    if (creatingProject) return
-    setCreatingProject(true)
-    try {
-      await createProjectShell(t('untitledProject', lang))
-      setTab('projects')
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error)
-      pushSystemMessage(
-        t('projectCreateFailed', lang, { reason: reason || t('unknownError', lang) }),
-        { severity: 'error', ttlMs: 7000 },
-      )
-    } finally {
-      setCreatingProject(false)
-    }
   }
 
   const stopModePoll = () => {
@@ -272,6 +255,7 @@ export function ProjectQueue() {
 
   return (
     <aside className="flex flex-col h-full border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+      {createProjectOpen && <CreateProjectDialog onClose={() => setCreateProjectOpen(false)} />}
       {/* Tab bar: Chats | Projects + contextual add */}
       <div className="flex items-stretch border-b border-[var(--color-border)]">
         <TabButton active={showChats} count={chats.length} onClick={handleChatsTab}>
@@ -283,9 +267,8 @@ export function ProjectQueue() {
         <button
           onClick={() => {
             if (showChats) createChat()
-            else void handleCreateProject()
+            else setCreateProjectOpen(true)
           }}
-          disabled={!showChats && creatingProject}
           className="w-7 shrink-0 flex items-center justify-center border-l border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           aria-label={showChats ? t('newChatAria', lang) : t('newProjectAria', lang)}
           title={showChats ? t('newChat', lang) : t('newProjectAria', lang)}

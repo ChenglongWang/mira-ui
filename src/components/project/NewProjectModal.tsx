@@ -5,7 +5,7 @@ import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useAgentStore } from '@/stores/agentStore'
 import { wsClient } from '@/services/websocket'
-import { uploadProjectFiles, validateDataPath } from '@/services/api'
+import { ProjectDirectoryExistsError, uploadProjectFiles, validateDataPath } from '@/services/api'
 import { cn } from '@/lib/utils'
 import type {
   AgentProfile,
@@ -17,6 +17,7 @@ import type {
   NewProjectInput,
 } from '@/types'
 import { t } from '@/i18n'
+import { joinProjectPath, slugifyProjectId } from '@/lib/projectPaths'
 
 const GOAL_OPERATORS: AutomationGoalOperator[] = ['>', '>=', '<', '<=', '==']
 const DEFAULT_GOAL: AutomationGoal = { metric: '', operator: '>', value: Number.NaN }
@@ -79,22 +80,6 @@ function dedupePaths(paths: string[]): string[] {
     result.push(path)
   }
   return result
-}
-
-function slugifyProjectId(value: string): string {
-  let text = value.trim().toLowerCase()
-  text = text.replace(/[\\/:]/g, '-')
-  text = text.split(/\s+/).filter(Boolean).join('-')
-  while (text.includes('--')) text = text.replace(/--/g, '-')
-  text = text.replace(/^[._-]+|[._-]+$/g, '')
-  return text.slice(0, 128) || 'project'
-}
-
-function joinProjectPath(parent: string, projectId: string): string {
-  const base = parent.trim().replace(/[\\/]+$/, '')
-  if (!base) return projectId
-  const separator = base.includes('\\') && !base.includes('/') ? '\\' : '/'
-  return `${base}${separator}${projectId}`
 }
 
 function detectPreferredReplyLanguage(text: string): 'zh' | 'en' {
@@ -281,6 +266,7 @@ export function NewProjectModal() {
   const [pathCheck, setPathCheck] = useState<PathCheckState>({ status: 'idle', message: '' })
   const [creating, setCreating] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [existingDir, setExistingDir] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [references, setReferences] = useState('')
   const [computeBudget, setComputeBudget] = useState('')
@@ -373,6 +359,10 @@ export function NewProjectModal() {
     if (!newProjectOpen) return
     setProjectParentDir(defaultProjectParentDir)
   }, [newProjectOpen, defaultProjectParentDir])
+
+  useEffect(() => {
+    setExistingDir(null)
+  }, [projectName, projectParentDir, customProjectDirAllowed, newProjectOpen])
 
   if (!newProjectOpen) return null
 
@@ -537,6 +527,7 @@ export function NewProjectModal() {
       : undefined
 
     const input: NewProjectInput = {
+      allowExistingDir: existingDir !== null,
       projectId: slugifyProjectId(projectName),
       displayName: projectName.trim(),
       projectParentDir: customProjectDirAllowed
@@ -575,7 +566,8 @@ export function NewProjectModal() {
         ])
       } catch (err) {
         try {
-          await deleteTask(projectId, true)
+          // Reused workspaces may contain user data from before this request.
+          await deleteTask(projectId, !input.allowExistingDir)
         } catch {
           // Preserve the upload error shown to the user; cleanup can be retried from the queue.
         }
@@ -646,7 +638,11 @@ export function NewProjectModal() {
       setUploadError('')
       closeNewProject()
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : t('unknownError', lang))
+      if (err instanceof ProjectDirectoryExistsError) {
+        setExistingDir(err.projectDir)
+      } else {
+        setUploadError(err instanceof Error ? err.message : t('unknownError', lang))
+      }
       setCreating(false)
     }
   }
@@ -721,6 +717,10 @@ export function NewProjectModal() {
                 {t('managedProjectLocation', lang)}
               </p>
             </div>
+          )}
+
+          {existingDir && (
+            <p role="alert" className="text-xs text-[var(--color-text-secondary)]">{t('projectDirectoryExists', lang, { path: existingDir })}</p>
           )}
 
           {/* Research Description — required */}
@@ -1194,7 +1194,7 @@ export function NewProjectModal() {
                 : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] cursor-not-allowed',
             )}
           >
-            {creating ? t('creating', lang) : t('createProject', lang)}
+            {t(creating ? 'creating' : existingDir ? 'createInExistingDirectory' : 'createProject', lang)}
           </button>
         </div>
         {!connected && (

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  ProjectDirectoryExistsError,
   createRemoteProject,
   createWorkflowRun,
   deleteProject,
@@ -124,6 +125,27 @@ describe('api service', () => {
   })
 
   describe('createRemoteProject', () => {
+    it('recognizes directory conflicts and sends consent only on the confirmed retry', async () => {
+      fetchMock.mockResolvedValueOnce(fail({ code: 'project_directory_exists', project_dir: '/data/study' }, 409))
+      await expect(createRemoteProject({ projectId: 'study' })).rejects.toMatchObject({
+        name: 'ProjectDirectoryExistsError', projectDir: '/data/study',
+      })
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty('allow_existing_dir')
+      fetchMock.mockResolvedValueOnce(ok({ id: 'study' }))
+      await createRemoteProject({ projectId: 'study', allowExistingDir: true })
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toHaveProperty('allow_existing_dir', true)
+    })
+    it('does not treat an unrelated conflict as consent to reuse a directory', async () => {
+      fetchMock.mockResolvedValueOnce(fail({ error: 'project already exists: study' }, 409))
+      try {
+        await createRemoteProject({ projectId: 'study' })
+        expect.fail('Expected a conflict')
+      } catch (error) {
+        expect(error).not.toBeInstanceOf(ProjectDirectoryExistsError)
+        expect(error).toBeInstanceOf(Error)
+      }
+    })
+
     it('maps camelCase payload to snake_case body', async () => {
       fetchMock.mockResolvedValueOnce(ok({ id: 'PRJ-1', has_plan: false }))
       await createRemoteProject({ projectId: 'PRJ-1', displayName: 'X', runMode: 'auto' })

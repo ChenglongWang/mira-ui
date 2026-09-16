@@ -215,11 +215,19 @@ export async function deleteOrganizationChat(chatId: string): Promise<void> {
   await organizationRequest(`/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
 }
 
+export class ProjectDirectoryExistsError extends Error {
+  constructor(public readonly projectDir: string) {
+    super(`Project directory already exists: ${projectDir}`)
+    this.name = 'ProjectDirectoryExistsError'
+  }
+}
+
 export async function createRemoteProject(payload: {
   projectId?: string
   displayName?: string
   projectParentDir?: string
   projectDir?: string
+  allowExistingDir?: boolean
   runMode?: 'manual' | 'auto'
   agentProfile?: AgentProfile
   contractVersion?: ContractVersion
@@ -230,6 +238,7 @@ export async function createRemoteProject(payload: {
   if (payload.displayName) body.display_name = payload.displayName
   if (payload.projectParentDir) body.project_parent_dir = payload.projectParentDir
   if (payload.projectDir) body.project_dir = payload.projectDir
+  if (payload.allowExistingDir === true) body.allow_existing_dir = true
   if (payload.runMode) body.run_mode = payload.runMode
   if (payload.agentProfile) body.agent_profile = payload.agentProfile
   if (payload.contractVersion) body.contract_version = payload.contractVersion
@@ -241,7 +250,13 @@ export async function createRemoteProject(payload: {
     body: JSON.stringify(body),
   })
   if (!resp.ok) {
-    throw new Error(await resp.text())
+    const message = await resp.text()
+    let details: { code?: string; project_dir?: string } | null = null
+    try { details = JSON.parse(message) } catch { /* Older engines may return plain text. */ }
+    if (resp.status === 409 && details?.code === 'project_directory_exists' && typeof details.project_dir === 'string') {
+      throw new ProjectDirectoryExistsError(details.project_dir)
+    }
+    throw new Error(message)
   }
   return await resp.json() as RemoteProject
 }

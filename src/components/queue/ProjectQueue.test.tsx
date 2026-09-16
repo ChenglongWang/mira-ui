@@ -161,7 +161,7 @@ describe('ProjectQueue mode switch', () => {
     expect(useProjectStore.getState().activeStage).toBe('modules')
   })
 
-  it('creates a lightweight project item and opens its overview without the setup modal', async () => {
+  it('asks for a name and directory before creating a lightweight project and opening its overview', async () => {
     useProjectStore.setState({
       appMode: 'project',
       selectedTaskId: null,
@@ -185,7 +185,22 @@ describe('ProjectQueue mode switch', () => {
     render(<ProjectQueue />)
     fireEvent.click(screen.getByRole('button', { name: 'New project' }))
 
+    expect(screen.getByRole('dialog', { name: 'New project' })).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Create Project' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Project Name'), { target: { value: 'Lung CT Study' } })
+    fireEvent.change(screen.getByLabelText('Project Location'), { target: { value: '/tmp/my projects' } })
+    expect(screen.getByText('Project directory: /tmp/my projects/lung-ct-study')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Create Project' }))
+
     await waitFor(() => expect(useProjectStore.getState().selectedTaskId).toBe('PRJ-new'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      project_id: 'lung-ct-study',
+      display_name: 'Lung CT Study',
+      project_parent_dir: '/tmp/my projects',
+    })
+    expect(useUiStore.getState().systemMessages.at(-1)?.text).toBe('Created “New project” at /tmp/projects/PRJ-new')
     expect(useProjectStore.getState().activeStage).toBe('modules')
     expect(useProjectStore.getState().tasks[0]).toMatchObject({
       id: 'PRJ-new',
