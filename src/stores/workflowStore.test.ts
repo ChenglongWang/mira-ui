@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { useWorkflowStore } from './workflowStore'
+import { useProjectStore } from './projectStore'
+import type { WorkflowSnapshot } from '@/types'
 
 vi.mock('@/services/api', () => ({
   fetchWorkflowSnapshot: vi.fn(),
@@ -46,6 +48,14 @@ const snapshot = {
 }
 
 describe('workflowStore', () => {
+  const experimentSnapshot = (): WorkflowSnapshot => ({ ...snapshot, runs: [{
+    ...snapshot.runs[0], module_type: 'experiment', status: 'completed', outputs: ['first', 'second', 'shared'],
+    module_data: { experiments: [
+      { id: 'Exp001', title: 'First', status: 'completed', evidence_refs: [{ ref_id: 'first' }] },
+      { id: 'Exp002', title: 'Second', status: 'completed', results: { metrics: { mae: 0.73 } }, evidence_refs: [{ ref_id: 'second' }] },
+    ] },
+  }] })
+
   beforeEach(() => {
     vi.clearAllMocks()
     useWorkflowStore.getState().clear()
@@ -56,6 +66,46 @@ describe('workflowStore', () => {
     await useWorkflowStore.getState().loadProject('PRJ-1')
     expect(useWorkflowStore.getState().snapshots['PRJ-1']).toEqual(snapshot)
     expect(useWorkflowStore.getState().selectedRunByProject['PRJ-1']).toBe('run-1')
+  })
+
+  it('synchronizes experiment candidate selection with the detail without leaving overview', () => {
+    useWorkflowStore.setState({ snapshots: { 'PRJ-1': experimentSnapshot() } })
+    useProjectStore.setState({ selectedTaskId: 'PRJ-1', selectedExpId: null, activeStage: 'modules' })
+    useWorkflowStore.getState().selectCandidate('PRJ-1', 'experiment', { runId: 'run-1', itemId: 'Exp002' })
+    expect(useProjectStore.getState().selectedExpId).toBe('workflow:run-1:Exp002')
+    expect(useProjectStore.getState().activeStage).toBe('modules')
+  })
+
+  it('hands off only the selected experiment record and its owned/shared attachments', async () => {
+    const source = experimentSnapshot()
+    useWorkflowStore.setState({ snapshots: { 'PRJ-1': source } })
+    vi.mocked(createWorkflowRun).mockResolvedValue({ run_id: 'delivery', project_sequence: 3 })
+    await useWorkflowStore.getState().createRun('PRJ-1', 'delivery', 'Write report', {
+      parentRunId: 'run-1', inputArtifactIds: ['first', 'second', 'shared'],
+      moduleData: { upstream_selection: { module_type: 'experiment', run_id: 'run-1', item_id: 'Exp002' } },
+    })
+    expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
+      inputs: [{ artifact_id: 'second' }, { artifact_id: 'shared' }],
+      moduleData: expect.objectContaining({
+        parent_run_id: 'run-1', source_run_revision: 1,
+        upstream_selection: expect.objectContaining({ experiment_id: 'Exp002', item_id: 'Exp002' }),
+        selected_experiment: (source.runs[0].module_data.experiments as unknown[])[1],
+        shared_artifact_ids: ['shared'],
+      }),
+    }))
+  })
+
+  it('rejects stale file-based selections and incomplete experiment handoffs', async () => {
+    const source = experimentSnapshot()
+    const experiments = source.runs[0].module_data.experiments as Array<Record<string, unknown>>
+    experiments[1].status = 'failed'
+    useWorkflowStore.setState({ snapshots: { 'PRJ-1': source } })
+    for (const itemId of ['second', 'Exp002']) {
+      await expect(useWorkflowStore.getState().createRun('PRJ-1', 'delivery', 'Write', {
+        parentRunId: 'run-1', moduleData: { upstream_selection: { run_id: 'run-1', item_id: itemId } },
+      })).rejects.toThrow('Select a completed experiment')
+    }
+    expect(createWorkflowRun).not.toHaveBeenCalled()
   })
 
   it('creates a direct-entry module run and refreshes', async () => {

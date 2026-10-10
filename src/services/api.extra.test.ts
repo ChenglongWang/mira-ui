@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   ProjectDirectoryExistsError,
+  attachChatContext,
   createRemoteProject,
   createWorkflowRun,
   deleteProject,
   deleteProjectFiles,
+  fetchChatContextPreview,
   fetchFeedbackConfig,
   fetchPlan,
   fetchPlanContract,
@@ -231,6 +233,80 @@ describe('api service', () => {
       expect(await fetchSessionHistory('PRJ-1')).toHaveLength(1)
       fetchMock.mockResolvedValueOnce(fail('x'))
       expect(await fetchSessionHistory('PRJ-1')).toEqual([])
+    })
+  })
+
+  describe('attachChatContext', () => {
+    it('attaches a source chat to the project and maps the response', async () => {
+      fetchMock.mockResolvedValueOnce(ok({
+        session_id: 'PRJ-1',
+        source_session_id: 'chat-1',
+        path: 'context/quick-chat-chat-1.md',
+        message_count: 4,
+      }))
+
+      await expect(attachChatContext('PRJ-1', 'chat-1')).resolves.toEqual({
+        sessionId: 'PRJ-1',
+        sourceSessionId: 'chat-1',
+        path: 'context/quick-chat-chat-1.md',
+        messageCount: 4,
+      })
+      expect(lastUrl()).toContain('/projects/PRJ-1/context/from-chat')
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({
+        method: 'POST',
+        body: JSON.stringify({ source_session_id: 'chat-1' }),
+      })
+    })
+
+    it('rejects failed or malformed attachment responses', async () => {
+      fetchMock.mockResolvedValueOnce(fail({ error: 'source chat missing' }, 404))
+      await expect(attachChatContext('PRJ-1', 'missing')).rejects.toThrow('source chat missing')
+      fetchMock.mockResolvedValueOnce(ok({ message_count: 0 }))
+      await expect(attachChatContext('PRJ-1', 'chat-1')).rejects.toThrow('did not include a path')
+    })
+  })
+
+  describe('fetchChatContextPreview', () => {
+    it('loads the rendered attachment content before project creation', async () => {
+      fetchMock.mockResolvedValueOnce(ok({
+        source_session_id: 'chat-1',
+        content: '# Conversation Context\n\n## User\n\nQuestion',
+        message_count: 1,
+      }))
+
+      await expect(fetchChatContextPreview('chat-1')).resolves.toEqual({
+        sourceSessionId: 'chat-1',
+        content: '# Conversation Context\n\n## User\n\nQuestion',
+        messageCount: 1,
+      })
+      expect(lastUrl()).toContain('/sessions/chat-1/context-preview')
+    })
+
+    it('posts live entries when the chat has not been persisted yet', async () => {
+      fetchMock.mockResolvedValueOnce(ok({
+        source_session_id: 'chat-live',
+        content: '# Conversation Context\n\n## User\n\nLive question',
+        message_count: 1,
+      }))
+      const entries = [{
+        id: 'live-1',
+        timestamp: '2026-09-16T12:00:00',
+        content: 'Live question',
+        type: 'response' as const,
+        metadata: { _user: true },
+      }]
+
+      await fetchChatContextPreview('chat-live', entries)
+
+      expect(fetchMock.mock.calls[0][1]).toMatchObject({
+        method: 'POST',
+        body: JSON.stringify({ entries }),
+      })
+    })
+
+    it('rejects missing preview content', async () => {
+      fetchMock.mockResolvedValueOnce(ok({ message_count: 0 }))
+      await expect(fetchChatContextPreview('chat-1')).rejects.toThrow('did not include content')
     })
   })
 

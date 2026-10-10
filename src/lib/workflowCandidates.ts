@@ -1,6 +1,6 @@
 import type { WorkflowInteraction, WorkflowModuleType, WorkflowRun } from '@/types'
 
-export type WorkflowCandidateKind = 'choice' | 'artifact' | 'run'
+export type WorkflowCandidateKind = 'choice' | 'artifact' | 'run' | 'experiment'
 
 export interface WorkflowCandidateItem {
   itemId: string
@@ -13,6 +13,8 @@ export interface WorkflowCandidateItem {
   kind: WorkflowCandidateKind
   selectedByRun: boolean
   updatedAt: string
+  experiment?: Record<string, unknown>
+  sharedArtifactIds?: string[]
 }
 
 export interface WorkflowCandidateSelection {
@@ -51,7 +53,9 @@ function interactionSelection(interaction: WorkflowInteraction | undefined): str
 export function isWorkflowCandidateInteraction(
   interaction: WorkflowInteraction | null | undefined,
 ): boolean {
-  return Boolean(interaction && !interaction.interaction_type.startsWith('approve_'))
+  return Boolean(interaction && [
+    'choose_direction', 'choose_artifact', 'choose_plan', 'choose_result', 'select',
+  ].includes(interaction.interaction_type))
 }
 
 function outputLabel(run: WorkflowRun, artifactId: string, index: number): string {
@@ -71,6 +75,57 @@ function runFallbackLabel(run: WorkflowRun): string {
     || run.label
 }
 
+export function workflowExperimentUiId(runId: string, experimentId: string): string {
+  return `workflow:${runId}:${experimentId}`
+}
+
+function experimentCandidates(run: WorkflowRun): WorkflowCandidateItem[] {
+  const records = Array.isArray(run.module_data.experiments)
+    ? run.module_data.experiments.map(asRecord).filter((item): item is Record<string, unknown> => Boolean(item && text(item.id)))
+    : []
+  const experiments = [...new Map(records.map((item) => [text(item.id), item])).values()]
+  const outputs = new Set(run.outputs)
+  const ownedIds = experiments.map((experiment) => {
+    const results = asRecord(experiment.results)
+    const refs = Array.isArray(experiment.evidence_refs) ? experiment.evidence_refs : []
+    const values = [
+      ...(Array.isArray(results?.artifacts) ? results.artifacts : []),
+      ...refs.flatMap((ref) => {
+        const item = asRecord(ref)
+        return item ? [item.artifact_id, item.ref_id, item.artifact, item.path] : []
+      }),
+    ]
+    return new Set(values.flatMap((value) => {
+      const path = text(value)
+      const id = outputs.has(path) ? path : /^\.mira\/artifacts\/([^/]+)\//.exec(path)?.[1]
+      return id && outputs.has(id) ? [id] : []
+    }))
+  })
+  // Older records reference Run-local files, not published artifact IDs. Their
+  // unassigned Run outputs remain shared supporting material, never candidates.
+  const assigned = new Set(ownedIds.flatMap((ids) => [...ids]))
+  const shared = run.outputs.filter((id) => !assigned.has(id))
+  return experiments.map((experiment, index) => ({
+    itemId: text(experiment.id),
+    runId: run.run_id,
+    moduleType: 'experiment',
+    label: `${text(experiment.id)} · ${text(experiment.title) || text(experiment.id)}`,
+    description: text(experiment.conclusion) || text(asRecord(experiment.results)?.findings)
+      || text(experiment.question) || undefined,
+    artifactIds: run.outputs.filter((id) => ownedIds[index].has(id) || !assigned.has(id)),
+    sharedArtifactIds: run.outputs.filter((id) => shared.includes(id)
+      || ownedIds.filter((ids) => ids.has(id)).length > 1),
+    status: experiment.status === 'completed' ? run.status
+      : experiment.status === 'failed' ? 'failed'
+        : experiment.status === 'skipped' ? 'cancelled'
+          : experiment.status === 'running' ? 'running' : 'created',
+    kind: 'experiment',
+    selectedByRun: false,
+    updatedAt: run.updated_at,
+    experiment,
+  }))
+}
+
 export function buildWorkflowCandidates(
   runs: WorkflowRun[],
   moduleType: WorkflowModuleType,
@@ -82,7 +137,22 @@ export function buildWorkflowCandidates(
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
 
   for (const run of moduleRuns) {
-    const interaction = asRecord(run.module_data.interaction) as WorkflowInteraction | null
+    if (moduleType === 'experiment') {
+      const experiments = experimentCandidates(run)
+      if (experiments.length > 0) {
+        candidates.push(...experiments)
+        continue
+      }
+    }
+    const activeInteraction = asRecord(run.module_data.interaction) as WorkflowInteraction | null
+    const history = Array.isArray(run.module_data.interaction_history)
+      ? run.module_data.interaction_history as WorkflowInteraction[]
+      : []
+    // A later clarification must neither become a candidate nor erase a prior
+    // direction choice used to identify downstream branches.
+    const interaction = isWorkflowCandidateInteraction(activeInteraction)
+      ? activeInteraction
+      : history.slice().reverse().find(isWorkflowCandidateInteraction)
     const resolvedSelection = interactionSelection(interaction ?? undefined)
     const seenItemIds = new Set<string>()
     const researchResult = asRecord(run.module_data.research_result)

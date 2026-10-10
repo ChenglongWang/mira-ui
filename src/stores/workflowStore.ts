@@ -5,10 +5,12 @@ import {
   buildWorkflowCandidates,
   resolveWorkflowCandidate,
   workflowRunsForUpstreamCandidate,
+  workflowExperimentUiId,
   type WorkflowCandidateItem,
   type WorkflowCandidateSelection,
 } from '@/lib/workflowCandidates'
 import type { WorkflowModuleType, WorkflowSnapshot, WorkflowSocketMessage } from '@/types'
+import { useProjectStore } from './projectStore'
 
 function isGenericActivityPing(summary: string): boolean {
   return /^mira is working(?:\.\.\.)?$/i.test(summary.trim())
@@ -98,14 +100,38 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
   },
 
   createRun: async (projectId, moduleType, intent, options) => {
+    let moduleData = { ...options?.moduleData }
+    let inputArtifactIds = options?.inputArtifactIds
+    const selection = moduleData.upstream_selection as Record<string, unknown> | undefined
+    const source = get().snapshots[projectId]?.runs.find((run) => run.run_id === options?.parentRunId)
+    if (source?.module_type === 'experiment' && Array.isArray(source.module_data.experiments)
+      && source.module_data.experiments.length > 0) {
+      const candidate = buildWorkflowCandidates([source], 'experiment').find((item) => (
+        item.runId === selection?.run_id && item.itemId === selection?.item_id
+      ))
+      if (!candidate?.experiment || candidate.status !== 'completed') {
+        throw new Error('Select a completed experiment result before continuing.')
+      }
+      // Carry the selected scientific record, not just a label or a shared CSV.
+      // Shared files can contain other experiments; they do not widen the scope.
+      moduleData = {
+        ...moduleData,
+        upstream_selection: { ...selection, experiment_id: candidate.itemId },
+        selected_experiment: structuredClone(candidate.experiment),
+        source_run_revision: source.revision,
+        shared_artifact_ids: candidate.sharedArtifactIds ?? [],
+        handoff_summary: `Use only ${candidate.itemId} from Run ${source.run_id} as the selected experiment result. Its record is in configuration.selected_experiment. Shared attachments may contain other experiments; do not treat those as selected results or rerun experiments.`,
+      }
+      inputArtifactIds = candidate.artifactIds
+    }
     const receipt = await createWorkflowRun(projectId, {
       moduleType,
       moduleData: {
-        ...options?.moduleData,
+        ...moduleData,
         ...(intent?.trim() ? { intent: intent.trim() } : {}),
         ...(options?.parentRunId ? { parent_run_id: options.parentRunId } : {}),
       },
-      inputs: options?.inputArtifactIds?.map((artifact_id) => ({ artifact_id })),
+      inputs: inputArtifactIds?.map((artifact_id) => ({ artifact_id })),
       enqueue: options?.enqueue,
     })
     set((state) => {
@@ -149,61 +175,70 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
     selectedRunByProject: { ...state.selectedRunByProject, [projectId]: runId },
   })),
 
-  selectCandidate: (projectId, moduleType, selection) => set((state) => {
-    const current = { ...state.selectedCandidateByProject[projectId] }
-    current[moduleType] = selection
-    const runs = state.snapshots[projectId]?.runs ?? []
-    const sourceCandidate = resolveWorkflowCandidate(
-      buildWorkflowCandidates(runs, moduleType),
-      selection,
-    )
-
-    // Switch the downstream columns to this candidate's existing branch. If
-    // no matching Run exists, keep the stage deliberately blank until the
-    // user continues and creates one.
-    if (moduleType === 'initiation' || moduleType === 'planning') {
-      const experimentCandidates = sourceCandidate
-        ? buildWorkflowCandidates(
-            workflowRunsForUpstreamCandidate(runs, 'experiment', sourceCandidate),
-            'experiment',
-          )
-        : []
-      const experimentCandidate = resolveWorkflowCandidate(
-        experimentCandidates,
-        current.experiment ?? undefined,
+  selectCandidate: (projectId, moduleType, selection) => {
+    set((state) => {
+      const current = { ...state.selectedCandidateByProject[projectId] }
+      current[moduleType] = selection
+      const runs = state.snapshots[projectId]?.runs ?? []
+      const sourceCandidate = resolveWorkflowCandidate(
+        buildWorkflowCandidates(runs, moduleType),
+        selection,
       )
-      current.experiment = selectionFor(experimentCandidate)
 
-      const deliveryCandidates = experimentCandidate
-        ? buildWorkflowCandidates(
-            workflowRunsForUpstreamCandidate(runs, 'delivery', experimentCandidate),
-            'delivery',
-          )
-        : []
-      current.delivery = selectionFor(resolveWorkflowCandidate(
-        deliveryCandidates,
-        current.delivery ?? undefined,
-      ))
-    } else if (moduleType === 'experiment') {
-      const deliveryCandidates = sourceCandidate
-        ? buildWorkflowCandidates(
-            workflowRunsForUpstreamCandidate(runs, 'delivery', sourceCandidate),
-            'delivery',
-          )
-        : []
-      current.delivery = selectionFor(resolveWorkflowCandidate(
-        deliveryCandidates,
-        current.delivery ?? undefined,
-      ))
+      // Switch the downstream columns to this candidate's existing branch. If
+      // no matching Run exists, keep the stage deliberately blank until the
+      // user continues and creates one.
+      if (moduleType === 'initiation' || moduleType === 'planning') {
+        const experimentCandidates = sourceCandidate
+          ? buildWorkflowCandidates(
+              workflowRunsForUpstreamCandidate(runs, 'experiment', sourceCandidate),
+              'experiment',
+            )
+          : []
+        const experimentCandidate = resolveWorkflowCandidate(
+          experimentCandidates,
+          current.experiment ?? undefined,
+        )
+        current.experiment = selectionFor(experimentCandidate)
+
+        const deliveryCandidates = experimentCandidate
+          ? buildWorkflowCandidates(
+              workflowRunsForUpstreamCandidate(runs, 'delivery', experimentCandidate),
+              'delivery',
+            )
+          : []
+        current.delivery = selectionFor(resolveWorkflowCandidate(
+          deliveryCandidates,
+          current.delivery ?? undefined,
+        ))
+      } else if (moduleType === 'experiment') {
+        const deliveryCandidates = sourceCandidate
+          ? buildWorkflowCandidates(
+              workflowRunsForUpstreamCandidate(runs, 'delivery', sourceCandidate),
+              'delivery',
+            )
+          : []
+        current.delivery = selectionFor(resolveWorkflowCandidate(
+          deliveryCandidates,
+          current.delivery ?? undefined,
+        ))
+      }
+      return {
+        selectedRunByProject: { ...state.selectedRunByProject, [projectId]: selection.runId },
+        selectedCandidateByProject: {
+          ...state.selectedCandidateByProject,
+          [projectId]: current,
+        },
+      }
+    })
+    // Do not navigate away from Overview when selecting a candidate there.
+    // The next detail view and the legacy timeline must nevertheless agree.
+    const candidate = buildWorkflowCandidates(get().snapshots[projectId]?.runs ?? [], moduleType)
+      .find((item) => item.runId === selection.runId && item.itemId === selection.itemId)
+    if (candidate?.kind === 'experiment' && useProjectStore.getState().selectedTaskId === projectId) {
+      useProjectStore.setState({ selectedExpId: workflowExperimentUiId(selection.runId, selection.itemId) })
     }
-    return {
-      selectedRunByProject: { ...state.selectedRunByProject, [projectId]: selection.runId },
-      selectedCandidateByProject: {
-        ...state.selectedCandidateByProject,
-        [projectId]: current,
-      },
-    }
-  }),
+  },
 
   handleSocketMessage: (message) => {
     if (message.message_type === 'workflow_event' && message.project_id) {

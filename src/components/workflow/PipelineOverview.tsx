@@ -142,7 +142,12 @@ export function PipelineOverview({
       <div className="grid min-h-0 flex-1 items-stretch gap-3 xl:grid-cols-3">
         {PIPELINE_STAGES.map((stage, index) => {
           const { runs: stageRuns, candidates, selected } = stageViews[stage.moduleType]
-          const canContinue = selected?.status === 'completed' && stage.next
+          const canContinue = selected?.status === 'completed'
+          const continueHint = !selected
+            ? (lang === 'zh' ? '请先选择一个候选 item' : 'Select a candidate item first')
+            : !canContinue
+              ? (lang === 'zh' ? '候选所属运行完成后才能继续' : 'The candidate run must be completed first')
+              : undefined
           return (
             <div key={stage.moduleType} className="relative flex min-h-[28rem] flex-col rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-3.5 xl:min-h-0">
               {index < PIPELINE_STAGES.length - 1 && (
@@ -180,7 +185,7 @@ export function PipelineOverview({
                 />
               </div>
 
-              <div className="mt-3 flex items-center gap-2 border-t border-[var(--color-border)] pt-3">
+              <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-3">
                 {selected ? (
                   <button
                     type="button"
@@ -206,11 +211,14 @@ export function PipelineOverview({
                     ? (lang === 'zh' ? '+ 新候选' : '+ New')
                     : (lang === 'zh' ? '启动阶段' : 'Start stage')}
                 </button>
-                {canContinue && stage.next && (
+                {stage.next && (
                   <button
                     type="button"
-                    disabled={disabled}
-                    onClick={() => onContinue(stage.next!, selected)}
+                    disabled={disabled || !canContinue}
+                    title={continueHint}
+                    onClick={() => {
+                      if (selected && canContinue) onContinue(stage.next!, selected)
+                    }}
                     className="rounded-md bg-[var(--color-accent)] px-2.5 py-1.5 text-[10px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
                   >
                     {lang === 'zh'

@@ -17,6 +17,17 @@ const task: ProjectTask = {
 }
 
 describe('buildExportMessage', () => {
+  it.each(['experiment_report', 'paper_article', 'presentation', 'metadata'] as const)(
+    'scopes native %s delivery to the selected experiment without legacy plan writes', (format) => {
+      const message = buildExportMessage(task, format, { workflow: true })
+      expect(message).toContain('configuration.selected_experiment')
+      expect(message).toContain('Shared attachments')
+      expect(message).toContain('publish_workflow_artifact')
+      expect(message).toContain('complete_workflow_run')
+      expect(message).not.toContain('task_plan.json')
+      expect(buildExportMessage(task, format)).toContain('task_plan.json.result')
+    },
+  )
   it('requests a real journal article docx with required sections and figures/tables', () => {
     const message = buildExportMessage(task, 'paper_article')
 

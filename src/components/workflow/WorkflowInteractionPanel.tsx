@@ -16,6 +16,18 @@ export function WorkflowInteractionPanel({
   projectId: string
   run: WorkflowRun
 }) {
+  const interaction = run.module_data.interaction as WorkflowInteraction | undefined
+  if (run.status !== 'waiting_input' || !interaction || interaction.response != null) return null
+  return <InteractionForm key={`${run.run_id}:${interaction.interaction_id}`} projectId={projectId} run={run} />
+}
+
+function InteractionForm({
+  projectId,
+  run,
+}: {
+  projectId: string
+  run: WorkflowRun
+}) {
   const commandRun = useWorkflowStore((state) => state.commandRun)
   const candidateSelection = useWorkflowStore((state) => (
     state.selectedCandidateByProject[projectId]?.[run.module_type]
@@ -27,7 +39,7 @@ export function WorkflowInteractionPanel({
   const [freeform, setFreeform] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  if (run.status !== 'waiting_input' || !interaction || interaction.response !== undefined) return null
+  if (!interaction) return null
 
   const choiceValue = (choice: Record<string, unknown>) => (
     choice.value ?? choice.artifact_id ?? choice.id ?? choice.label
@@ -63,11 +75,16 @@ export function WorkflowInteractionPanel({
     return response
   }
   const canSubmit = (
-    selectedChoice !== undefined || (interaction.allow_freeform && freeform.trim().length > 0)
+    selectedChoice !== undefined || (!confirmationInteraction && interaction.allow_freeform && freeform.trim().length > 0)
   ) && (!revising || freeform.trim().length > 0)
 
   return (
     <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
+      {!confirmationInteraction && (
+        <div className="mb-2 text-[11px] font-bold text-amber-600 dark:text-amber-300">
+          {lang === 'zh' ? '等待你的确认 · 回答后继续当前任务' : 'Your input is needed · answer to continue this task'}
+        </div>
+      )}
       {confirmationInteraction && (
         <div className="mb-2 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-amber-600 dark:text-amber-300">
           <span>{lang === 'zh' ? 'AI 执行确认' : 'AI execution confirmation'}</span>
@@ -90,6 +107,8 @@ export function WorkflowInteractionPanel({
               <button
                 key={String(choice.id ?? index)}
                 type="button"
+                aria-pressed={active}
+                disabled={pending}
                 onClick={() => {
                   if (candidateInteraction) {
                     selectCandidate(projectId, run.module_type, {
@@ -97,7 +116,7 @@ export function WorkflowInteractionPanel({
                       itemId,
                     })
                   } else {
-                    setSelectedInteractionValue(itemId)
+                    setSelectedInteractionValue(active ? undefined : itemId)
                   }
                 }}
                 className={cn(
@@ -107,7 +126,10 @@ export function WorkflowInteractionPanel({
                     : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]',
                 )}
               >
-                {choiceLabel(choice)}
+                <span className="block">{choiceLabel(choice)}</span>
+                {typeof choice.description === 'string' && choice.description && (
+                  <span className="mt-1 block text-[11px] font-normal opacity-80">{choice.description}</span>
+                )}
               </button>
             )
           })}
@@ -116,6 +138,9 @@ export function WorkflowInteractionPanel({
       {interaction.allow_freeform && (
         <textarea
           value={freeform}
+          disabled={pending}
+          maxLength={4000}
+          aria-label={lang === 'zh' ? '补充说明或自定义回答' : 'Notes or custom answer'}
           onChange={(event) => setFreeform(event.target.value)}
           placeholder={revising
             ? (lang === 'zh' ? '请说明需要 AI 修改的内容' : 'Describe what the AI should revise')

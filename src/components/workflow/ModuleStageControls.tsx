@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { t } from '@/i18n'
 import {
@@ -54,7 +54,7 @@ function startPromptFor(
   deliveryFormat: ExportFormat | null,
 ): string {
   if (moduleType !== 'delivery' || !deliveryFormat) return intent
-  return `${intent}\n\n${buildExportMessage(task, deliveryFormat)}`
+  return `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true })}`
 }
 
 export function ModuleStageControls() {
@@ -80,10 +80,31 @@ export function ModuleStageControls() {
     projectId ? state.selectedCandidateByProject[projectId] : undefined
   ))
   const createRun = useWorkflowStore((state) => state.createRun)
+  const selectRun = useWorkflowStore((state) => state.selectRun)
   const selectedRun = useMemo(
-    () => snapshot?.runs.find((run) => run.run_id === selectedRunId),
-    [selectedRunId, snapshot?.runs],
+    () => {
+      const stageRuns = snapshot?.runs.filter((run) => MODULE_META[run.module_type].stage === activeStage) ?? []
+      const current = stageRuns.find((run) => run.run_id === selectedRunId)
+      if (current) return current
+      // A stage tab changes the surface, not the global Run selection. Restore
+      // that stage's choice before rendering its controls and conversation.
+      const remembered = stageRuns.find((run) => candidateSelections?.[run.module_type]?.runId === run.run_id)
+      if (remembered) return remembered
+      const latest = stageRuns.slice().sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+      return latest.find((run) => run.status === 'waiting_input') ?? latest[0]
+    },
+    [activeStage, candidateSelections, selectedRunId, snapshot?.runs],
   )
+  useEffect(() => {
+    if (projectId && selectedRun && selectedRun.run_id !== selectedRunId) {
+      selectRun(projectId, selectedRun.run_id)
+    }
+  }, [projectId, selectedRun, selectedRunId, selectRun])
+  const controlsRef = useRef<HTMLDivElement>(null)
+  const interactionId = (selectedRun?.module_data.interaction as { interaction_id?: string } | undefined)?.interaction_id
+  useEffect(() => {
+    if (controlsRef.current) controlsRef.current.scrollTop = 0
+  }, [selectedRun?.run_id, selectedRun?.status, interactionId])
   const moduleCandidates = useMemo(
     () => selectedRun && snapshot
       ? buildWorkflowCandidates(snapshot.runs, selectedRun.module_type)
@@ -94,7 +115,7 @@ export function ModuleStageControls() {
     ? resolveWorkflowCandidate(
         moduleCandidates,
         candidateSelections?.[selectedRun.module_type],
-        selectedRunId,
+        selectedRun.run_id,
       )
     : null
   const [targetModule, setTargetModule] = useState<WorkflowModuleType | null>(null)
@@ -114,8 +135,10 @@ export function ModuleStageControls() {
   const downstream = DOWNSTREAM_MODULES[selectedRun.module_type]
   const interactionVisible = Boolean(selectedRun.status === 'waiting_input'
     && selectedRun.module_data.interaction
-    && typeof selectedRun.module_data.interaction === 'object')
+    && typeof selectedRun.module_data.interaction === 'object'
+    && (selectedRun.module_data.interaction as { response?: unknown }).response == null)
   const mustSelectCandidate = moduleCandidates.length > 1 && !selectedCandidate
+  const selectedExperimentIncomplete = selectedCandidate?.kind === 'experiment' && selectedCandidate.status !== 'completed'
 
   const openTarget = (moduleType: WorkflowModuleType) => {
     const label = lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en.toLowerCase()
@@ -222,11 +245,20 @@ export function ModuleStageControls() {
   }
 
   return (
-    <div className={`max-h-[45vh] shrink-0 overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] px-6 ${candidateListCollapsed ? 'py-2' : 'py-4'}`}>
+    <div ref={controlsRef} className={`${interactionVisible ? 'min-h-0 flex-[1_1_100%]' : 'max-h-[45vh] shrink-0'} overflow-y-auto border-b border-[var(--color-border)] bg-[var(--color-bg-primary)] px-6 ${candidateListCollapsed ? 'py-2' : 'py-4'}`}>
       <div className="mx-auto max-w-2xl">
+        {interactionVisible && (
+          <div className="mb-4">
+            <WorkflowInteractionPanel
+              key={String((selectedRun.module_data.interaction as { interaction_id?: unknown }).interaction_id ?? selectedRun.run_id)}
+              projectId={projectId}
+              run={selectedRun}
+            />
+          </div>
+        )}
         {snapshot && moduleCandidates.length > 0 && (
           <div className={candidateListCollapsed ? (interactionVisible ? 'mb-2' : '') : 'mb-4'}>
-            <div className={`flex items-center justify-between gap-3 ${candidateListCollapsed ? '' : 'mb-2'}`}>
+            <div className={`flex flex-wrap items-center justify-between gap-3 ${candidateListCollapsed ? '' : 'mb-2'}`}>
               <div className="flex min-w-0 items-center gap-2">
                 <div className="text-xs font-medium text-[var(--color-text-secondary)]">
                   {lang === 'zh' ? '本模块候选交付物' : 'Candidate outputs in this module'}
@@ -287,24 +319,21 @@ export function ModuleStageControls() {
           </div>
         )}
 
-        {interactionVisible && (
-          <WorkflowInteractionPanel
-            key={String((selectedRun.module_data.interaction as { interaction_id?: unknown }).interaction_id ?? selectedRun.run_id)}
-            projectId={projectId}
-            run={selectedRun}
-          />
-        )}
-
-        {!candidateListCollapsed && selectedRun.status === 'completed' && downstream.length > 0 && (
-          <div className={interactionVisible ? 'mt-4' : ''}>
+        {selectedRun.status === 'completed' && downstream.length > 0 && (
+          <div className={interactionVisible || candidateListCollapsed ? 'mt-4' : ''}>
             <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">
               {lang === 'zh' ? '下一步：从当前结果继续' : 'Next: continue from this result'}
             </div>
             {mustSelectCandidate && (
               <div className="mb-2 text-[10px] text-amber-600">
                 {lang === 'zh'
-                  ? '请先从上方候选列表选择一个 item。'
-                  : 'Select one item from the candidate list above first.'}
+                  ? (candidateListCollapsed ? '请展开上方候选列表，选择一个 item。' : '请先从上方候选列表选择一个 item。')
+                  : (candidateListCollapsed ? 'Expand the candidate list above and select one item first.' : 'Select one item from the candidate list above first.')}
+              </div>
+            )}
+            {selectedExperimentIncomplete && (
+              <div className="mb-2 text-[10px] text-amber-600">
+                {lang === 'zh' ? '该实验未完成，不能作为已完成结果继续交付。' : 'This experiment is not completed and cannot be handed off as a completed result.'}
               </div>
             )}
             <div className="flex flex-wrap gap-2">
@@ -312,12 +341,13 @@ export function ModuleStageControls() {
                 <button
                   key={moduleType}
                   type="button"
-                  disabled={mustSelectCandidate}
+                  disabled={mustSelectCandidate || selectedExperimentIncomplete}
                   onClick={() => openTarget(moduleType)}
                   className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:cursor-not-allowed disabled:opacity-45"
                 >
-                  {MODULE_META[moduleType].icon}{' '}
-                  {lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en}
+                  {lang === 'zh'
+                    ? `用此候选继续${MODULE_META[moduleType].zh} →`
+                    : `Continue to ${MODULE_META[moduleType].en} →`}
                 </button>
               ))}
             </div>

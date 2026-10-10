@@ -346,6 +346,87 @@ function readErrorMessage(data: unknown, fallback: string): string {
   return typeof error === 'string' && error.trim().length > 0 ? error.trim() : fallback
 }
 
+export interface ChatContextAttachmentResult {
+  sessionId: string
+  sourceSessionId: string
+  path: string
+  messageCount: number
+}
+
+export interface ChatContextPreviewResult {
+  sourceSessionId: string
+  content: string
+  messageCount: number
+}
+
+export async function fetchChatContextPreview(
+  sourceSessionId: string,
+  entries: LogEntry[] = [],
+): Promise<ChatContextPreviewResult> {
+  const encoded = encodeURIComponent(sourceSessionId)
+  const resp = await fetch(
+    `${getApiUrl()}/sessions/${encoded}/context-preview`,
+    entries.length > 0 ? {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries }),
+    } : undefined,
+  )
+  let data: unknown = null
+  try {
+    data = await resp.json()
+  } catch {
+    data = null
+  }
+  if (!resp.ok) {
+    throw new Error(readErrorMessage(data, `chat context preview failed (${resp.status})`))
+  }
+  const record = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  if (typeof record.content !== 'string') {
+    throw new Error('chat context preview response did not include content')
+  }
+  return {
+    sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : sourceSessionId,
+    content: record.content,
+    messageCount: typeof record.message_count === 'number' ? record.message_count : 0,
+  }
+}
+
+export async function attachChatContext(
+  sessionId: string,
+  sourceSessionId: string,
+  entries: LogEntry[] = [],
+): Promise<ChatContextAttachmentResult> {
+  const encoded = encodeURIComponent(sessionId)
+  const resp = await fetch(`${getApiUrl()}/projects/${encoded}/context/from-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_session_id: sourceSessionId,
+      ...(entries.length > 0 ? { entries } : {}),
+    }),
+  })
+  let data: unknown = null
+  try {
+    data = await resp.json()
+  } catch {
+    data = null
+  }
+  if (!resp.ok) {
+    throw new Error(readErrorMessage(data, `chat context attachment failed (${resp.status})`))
+  }
+  const record = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  if (typeof record.path !== 'string' || !record.path) {
+    throw new Error('chat context attachment response did not include a path')
+  }
+  return {
+    sessionId: typeof record.session_id === 'string' ? record.session_id : sessionId,
+    sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : sourceSessionId,
+    path: record.path,
+    messageCount: typeof record.message_count === 'number' ? record.message_count : 0,
+  }
+}
+
 export async function deleteProject(
   sessionId: string,
   options: { deleteFiles?: boolean } = {},

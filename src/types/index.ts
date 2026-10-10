@@ -69,6 +69,10 @@ export interface ExperimentSnapshot {
 
 export interface Experiment {
   id: string
+  /** Stable UI id is namespaced; these retain the Run-local identity. */
+  experiment_id?: string
+  workflow_run_id?: string
+  workflow_run_label?: string
   title: string
   status: ExperimentStatus
   question?: string

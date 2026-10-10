@@ -96,6 +96,83 @@ describe('WorkflowWorkspace module entry', () => {
     vi.mocked(fetchWorkflowSnapshot).mockResolvedValue(snapshot)
   })
 
+  it('collapses legacy status panels by default and allows repeated debug toggling', () => {
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': snapshot },
+      selectedRunByProject: { 'PRJ-1': 'run-1' },
+    })
+    const view = render(<WorkflowWorkspace />)
+
+    const toggle = screen.getByRole('button', { name: /Debug.*Run status/ })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('Module runs')).not.toBeVisible()
+    expect(screen.getByText('Revision')).not.toBeVisible()
+    expect(screen.getByRole('region', { name: 'Project overview' })).toBeVisible()
+
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('Module runs')).toBeVisible()
+    expect(screen.getByText('Revision')).toBeVisible()
+
+    fireEvent.click(toggle)
+    expect(screen.getByText('Module runs')).not.toBeVisible()
+    expect(createWorkflowRun).not.toHaveBeenCalled()
+    expect(wsClient.send).not.toHaveBeenCalled()
+    fireEvent.click(toggle)
+    view.unmount()
+    useSettingsStore.setState({ language: 'zh' })
+    render(<WorkflowWorkspace />)
+    expect(screen.getByRole('button', { name: /Debug.*运行状态/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.getByText('模块运行')).not.toBeVisible()
+  })
+
+  it('keeps the experiment handoff discoverable until a completed research candidate is selected', () => {
+    const researchRun = {
+      ...snapshot.runs[0], status: 'completed' as const, outputs: ['research-artifact'],
+      module_data: { research_result: { directions: [
+        { id: 'D1', title: 'Direction A', rationale: 'First option' },
+        { id: 'D2', title: 'Direction B', rationale: 'Second option' },
+      ] } },
+    }
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': { ...snapshot, runs: [researchRun] } },
+      selectedRunByProject: { 'PRJ-1': researchRun.run_id },
+      selectedCandidateByProject: { 'PRJ-1': { initiation: null } },
+    })
+    render(<WorkflowWorkspace />)
+
+    const next = screen.getByRole('button', { name: 'Continue to Experiment →' })
+    expect(next).toBeVisible()
+    expect(next).toBeDisabled()
+    expect(next).toHaveAttribute('title', 'Select a candidate item first')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select candidate: Direction B' }))
+    expect(next).toBeEnabled()
+    fireEvent.click(next)
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect((screen.getByLabelText('Goal for this run') as HTMLTextAreaElement).value).toContain('Direction B')
+    expect(createWorkflowRun).not.toHaveBeenCalled()
+    expect(wsClient.send).not.toHaveBeenCalled()
+  })
+
+  it.each(['running', 'waiting_input', 'failed'] as const)('does not continue a selected %s research run', (status) => {
+    const run = { ...snapshot.runs[0], status, outputs: ['partial-artifact'] }
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': { ...snapshot, runs: [run] } },
+      selectedRunByProject: { 'PRJ-1': run.run_id },
+    })
+    render(<WorkflowWorkspace />)
+
+    const next = screen.getByRole('button', { name: 'Continue to Experiment →' })
+    expect(next).toBeVisible()
+    expect(next).toBeDisabled()
+    expect(next).toHaveAttribute('title', 'The candidate run must be completed first')
+    fireEvent.click(next)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(createWorkflowRun).not.toHaveBeenCalled()
+    expect(wsClient.send).not.toHaveBeenCalled()
+  })
+
   it('collects a goal, creates an enqueued run, opens its module, and sends the first message', async () => {
     render(<WorkflowWorkspace />)
 
@@ -244,6 +321,7 @@ describe('WorkflowWorkspace module entry', () => {
     render(<WorkflowWorkspace />)
 
     fireEvent.click(screen.getByRole('button', { name: 'Select candidate: 2. artifact-2' }))
+    fireEvent.click(screen.getByRole('button', { name: /Debug.*Run status/ }))
     const handoffHeading = await screen.findByText('Continue from this result (new branch)')
     const handoffSection = handoffHeading.parentElement
     expect(handoffSection).not.toBeNull()
@@ -297,6 +375,7 @@ describe('WorkflowWorkspace module entry', () => {
     })
 
     render(<WorkflowWorkspace />)
+    fireEvent.click(screen.getByRole('button', { name: /Debug.*Run status/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Run now' }))
 
     expect(wsClient.send).toHaveBeenCalledWith(expect.objectContaining({

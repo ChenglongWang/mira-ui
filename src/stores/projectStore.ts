@@ -152,6 +152,9 @@ function parseExperimentSnapshot(raw: any): Experiment['snapshot'] {
 function parseExperiment(raw: any, fallbackIdx: number): Experiment {
   return {
     id: (raw.id as string) ?? `Exp${String(fallbackIdx + 1).padStart(3, '0')}`,
+    experiment_id: raw.experiment_id,
+    workflow_run_id: raw.workflow_run_id,
+    workflow_run_label: raw.workflow_run_label,
     title: (raw.title as string) ?? 'Untitled experiment',
     status: normalizeExperimentStatus(raw.status),
     question: raw.question as string | undefined,
@@ -416,7 +419,20 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
     })
   },
 
-  selectExperiment: (id) => set({ selectedExpId: id, activeStage: 'experiment' }),
+  selectExperiment: (id) => {
+    const projectId = get().selectedTaskId
+    const experiment = get().tasks.find((task) => task.id === projectId)?.experiments.find((item) => item.id === id)
+    if (projectId && experiment?.workflow_run_id) {
+      if (experiment.experiment_id && experiment.experiment_id !== 'run-summary') {
+        useWorkflowStore.getState().selectCandidate(projectId, 'experiment', {
+          runId: experiment.workflow_run_id, itemId: experiment.experiment_id,
+        })
+      } else {
+        useWorkflowStore.getState().selectRun(projectId, experiment.workflow_run_id)
+      }
+    }
+    set({ selectedExpId: id, activeStage: 'experiment' })
+  },
   setActiveStage: (stage) => set({ activeStage: stage }),
   setAgentProfile: (agentProfile) => {
     const selectedId = get().selectedTaskId

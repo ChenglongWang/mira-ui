@@ -48,20 +48,6 @@ function deriveWorkflowActivityLabel(activity: string | undefined): string | nul
   return condenseActivity(normalized, 80)
 }
 
-// Build a project-description seed from a chat's transcript so promoting a
-// conversation into a research project carries the context forward.
-function buildPromotePrefill(logs: AgentLogEntry[]): string {
-  const lines: string[] = []
-  for (const entry of logs) {
-    if (entry.type !== 'response') continue
-    const who = entry.metadata?._user ? 'User' : 'Mira'
-    const text = entry.content.trim()
-    if (!text) continue
-    lines.push(`${who}: ${text}`)
-  }
-  return lines.join('\n\n').slice(0, 4000)
-}
-
 type RenderItem =
   | { kind: 'entry'; entry: AgentLogEntry }
   | { kind: 'activity_group'; id: string; entries: AgentLogEntry[] }
@@ -593,7 +579,7 @@ export function AgentPanel() {
         )}
         {sessionId && isChat && (
           <button
-            onClick={() => openNewProject({ prefill: buildPromotePrefill(logs), fromChatId: sessionId })}
+            onClick={() => openNewProject({ fromChatId: sessionId })}
             title={t('promoteToProjectHint', lang)}
             className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-[var(--color-accent)] border border-[var(--color-accent)]/30 hover:bg-[var(--color-accent)]/10 transition-colors"
           >

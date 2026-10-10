@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/services/api', () => ({
@@ -162,7 +162,7 @@ describe('ModuleStageControls', () => {
     expect(useProjectStore.getState().activeStage).toBe('result')
   })
 
-  it('collapses and expands the module candidate outputs with one click', () => {
+  it('keeps the handoff available when the candidate list is collapsed', () => {
     const run = makeRun()
     const snapshot = makeSnapshot(run)
     useWorkflowStore.setState({
@@ -178,15 +178,22 @@ describe('ModuleStageControls', () => {
     expect(screen.getByRole('button', { name: 'Select candidate: 1. artifact-1' })).toBeInTheDocument()
     expect(screen.getByText('Next: continue from this result')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Experiment/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Select candidate: 1. artifact-1' }))
 
     fireEvent.click(collapse)
 
     const expand = screen.getByRole('button', { name: 'Expand candidate outputs' })
     expect(expand).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.getByText('2 candidates')).toBeInTheDocument()
+    expect(screen.getByText(/2 candidates.*Selected: 1. artifact-1/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Select candidate: 1. artifact-1' })).not.toBeInTheDocument()
-    expect(screen.queryByText('Next: continue from this result')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Experiment/ })).not.toBeInTheDocument()
+    expect(screen.getByText('Next: continue from this result')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Continue to Experiment →' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue to Experiment →' }))
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect((screen.getByLabelText('Goal for this run') as HTMLTextAreaElement).value).toContain('1. artifact-1')
+    expect(createWorkflowRun).not.toHaveBeenCalled()
+    expect(wsClient.send).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
 
     fireEvent.click(expand)
 
@@ -194,6 +201,84 @@ describe('ModuleStageControls', () => {
     expect(screen.getByRole('button', { name: 'Select candidate: 1. artifact-1' })).toBeInTheDocument()
     expect(screen.getByText('Next: continue from this result')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Experiment/ })).toBeInTheDocument()
+  })
+
+  it('keeps a collapsed, unselected candidate handoff disabled with guidance', () => {
+    const run = makeRun()
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': makeSnapshot(run) },
+      selectedRunByProject: { 'PRJ-1': run.run_id },
+      selectedCandidateByProject: { 'PRJ-1': { initiation: null } },
+    })
+    render(<ModuleStageControls />)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse candidate outputs' }))
+    const next = screen.getByRole('button', { name: 'Continue to Experiment →' })
+    expect(next).toBeVisible()
+    expect(next).toBeDisabled()
+    expect(screen.getByText('Expand the candidate list above and select one item first.')).toBeVisible()
+    fireEvent.click(next)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(createWorkflowRun).not.toHaveBeenCalled()
+    expect(wsClient.send).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['initiation', 'research'], ['planning', 'plan'], ['experiment', 'experiment'], ['delivery', 'result'],
+  ] as const)('shows the pending %s form after switching from another stage', (moduleType, stage) => {
+    const otherRun = makeRun({ run_id: 'other-run', module_type: moduleType === 'initiation' ? 'experiment' : 'initiation' })
+    const run = makeRun({
+      run_id: 'pending-run', module_type: moduleType, status: 'waiting_input', outputs: [],
+      module_data: { interaction: {
+        interaction_id: 'data-input', interaction_type: 'clarify_requirements',
+        title: 'Confirm available data', prompt: 'Which data can this experiment use?',
+        choices: [{ id: 'existing', value: 'existing', label: 'Existing data' }],
+        response_schema: { type: 'object', required: ['selection'] }, allow_freeform: true,
+      } },
+    })
+    useProjectStore.setState({ activeStage: stage })
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': { ...makeSnapshot(run), runs: [otherRun, run] } },
+      selectedRunByProject: { 'PRJ-1': otherRun.run_id },
+    })
+
+    const { container } = render(<ModuleStageControls />)
+    expect(screen.getByText('Confirm available data')).toBeVisible()
+    expect(useWorkflowStore.getState().selectedRunByProject['PRJ-1']).toBe(run.run_id)
+    expect(container.firstChild).not.toHaveClass('max-h-[45vh]')
+    expect(screen.getByText('Confirm available data').compareDocumentPosition(
+      screen.getByText('Candidate outputs in this module'),
+    ) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse candidate outputs' }))
+    expect(screen.getByText('Confirm available data')).toBeVisible()
+    expect(createWorkflowRun).not.toHaveBeenCalled()
+    expect(wsClient.send).not.toHaveBeenCalled()
+  })
+
+  it('brings repeated questions back into view without reusing an answer', () => {
+    const interaction = {
+      interaction_id: 'question-1', interaction_type: 'clarify_requirements',
+      title: 'First question', prompt: 'Choose data',
+      choices: [{ id: 'data', value: 'data', label: 'Existing data' }],
+      response_schema: { type: 'object', required: ['selection'] }, allow_freeform: true,
+    }
+    const run = makeRun({ status: 'waiting_input', module_data: { interaction } })
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': makeSnapshot(run) },
+      selectedRunByProject: { 'PRJ-1': run.run_id },
+    })
+    const { container } = render(<ModuleStageControls />)
+    fireEvent.click(screen.getByRole('button', { name: 'Existing data' }))
+    const controls = container.firstChild as HTMLDivElement
+    controls.scrollTop = 300
+    act(() => useWorkflowStore.setState({ snapshots: { 'PRJ-1': makeSnapshot({
+      ...run, revision: 3, module_data: { interaction: {
+        ...interaction, interaction_id: 'question-2', title: 'Second question', interaction_type: 'resolve_conflict',
+      } },
+    }) } }))
+    expect(controls.scrollTop).toBe(0)
+    expect(screen.getByText('Second question')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Existing data' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'Confirm and continue' })).toBeDisabled()
   })
 
   it('renders and submits structured interaction directly in the module center column', async () => {

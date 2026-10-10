@@ -110,6 +110,10 @@ export function WorkflowCandidateList({
                   {candidate.artifactIds.length > 0
                     ? `${candidate.artifactIds.length} artifact${candidate.artifactIds.length === 1 ? '' : 's'}`
                     : candidate.runId}
+                  {!!candidate.sharedArtifactIds?.length && (
+                    lang === 'zh' ? ` · ${candidate.sharedArtifactIds.length} 个共享附件`
+                      : ` · ${candidate.sharedArtifactIds.length} shared`
+                  )}
                 </span>
               </span>
             </div>

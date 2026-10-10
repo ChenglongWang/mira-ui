@@ -29,6 +29,7 @@ import {
   type WorkflowCandidateItem,
 } from '@/lib/workflowCandidates'
 import { PipelineOverview } from './PipelineOverview'
+import { WorkflowDebugPanel } from './WorkflowDebugPanel'
 
 const MODULES: Array<{
   type: WorkflowModuleType
@@ -112,8 +113,9 @@ function buildModuleStartPrompt(
       `- 指定来源：${enabled ? (sources.join('、') || '未指定') : '不使用外部来源'}`,
       references ? `- 用户参考文献：\n${references}` : '- 用户参考文献：无',
       '',
-      '请严格按照以上配置执行。调研内容需要保留标题、作者、年份、来源、URL/DOI、摘要、相关性、冲突证据、研究空白和候选方向，并提交到模块的结构化研究结果中，以便在中间工作区按文献卡片审计。',
+      '请严格按照以上配置执行。若本次目标及已有确认尚未明确成果方向，先用交互表单轻量澄清希望调研帮助做出什么决定，允许用户选择由 AI 建议；目标明确则不重复询问。调研内容需要保留标题、作者、年份、来源、URL/DOI、摘要、相关性、冲突证据和研究空白，并提交到模块的结构化研究结果中。若目标包含后续研究或实验，归纳少量有证据依据的候选方向，说明可行性、风险和最小验证实验；若只要求综述或比较，不强制提出候选方向。',
       '除非用户明确要求其他语言，否则检索进度、结构化调研结果和最终回复均使用中文。',
+      '结构化研究结果用于在中间工作区展示可审计的文献卡片。',
     ].join('\n')
   }
   return [
@@ -127,8 +129,9 @@ function buildModuleStartPrompt(
     `- Selected sources: ${enabled ? (sources.join(', ') || 'none selected') : 'no external sources'}`,
     references ? `- User references:\n${references}` : '- User references: none',
     '',
-    'Follow this configuration exactly. Preserve title, authors, year, source, URL/DOI, summary, relevance, conflicting evidence, research gaps, and candidate directions in the module’s structured research result so the center workspace can render auditable reference cards.',
+    'Follow this configuration exactly. If the goal and prior decisions leave the intended output direction unclear, first use the interaction form to clarify what decision this research should support, including an option to let the AI suggest a focus. Do not re-ask when already clear. Preserve title, authors, year, source, URL/DOI, summary, relevance, conflicting evidence, and research gaps in the structured research result. For research or experiment-oriented goals, synthesize a few evidence-backed candidates with feasibility, risks, and a minimal validation experiment; do not force candidates for an overview/comparison-only request.',
     'Respond in English unless the user explicitly requests another language.',
+    'The structured research result lets the center workspace render auditable reference cards.',
   ].join('\n')
 }
 
@@ -506,7 +509,7 @@ export function WorkflowWorkspace() {
         lang,
       )
       const startPrompt = moduleType === 'delivery' && deliveryFormat && task
-        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat)}`
+        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true })}`
         : buildModuleStartPrompt(moduleType, intent, moduleData, promptLanguage)
       useAgentStore.getState().addLog(conversationId, {
         id: `module-start-${Date.now()}`,
@@ -576,6 +579,9 @@ export function WorkflowWorkspace() {
           }}
           onOpen={(candidate) => {
             selectRun(projectId, candidate.runId)
+            if (candidate.kind === 'experiment') {
+              useProjectStore.getState().selectExperiment(`workflow:${candidate.runId}:${candidate.itemId}`)
+            }
             setActiveStage(MODULE_STAGE[candidate.moduleType])
           }}
         />
@@ -912,154 +918,158 @@ export function WorkflowWorkspace() {
           </div>
         )}
 
-        <div className="grid min-h-80 gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(360px,1.2fr)]">
-          <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
-            <div className="border-b border-[var(--color-border)] px-4 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
-              {lang === 'zh' ? '模块运行' : 'Module runs'}
-            </div>
-            <div className="divide-y divide-[var(--color-border)]">
-              {loading && !snapshot && <div className="p-4 text-xs text-[var(--color-text-muted)]">Loading…</div>}
-              {snapshot?.runs.length === 0 && (
-                <div className="p-5 text-xs leading-relaxed text-[var(--color-text-muted)]">
-                  {lang === 'zh' ? '还没有运行。请从上方选择任意模块开始。' : 'No runs yet. Choose any module above to begin.'}
+        {/* Temporary legacy inspector: keep separate from the primary pipeline UI. */}
+        <WorkflowDebugPanel key={projectId}>
+          <div className="grid min-h-80 gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(360px,1.2fr)]">
+            <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+              <div className="border-b border-[var(--color-border)] px-4 py-3 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                {lang === 'zh' ? '模块运行' : 'Module runs'}
+              </div>
+              <div className="divide-y divide-[var(--color-border)]">
+                {loading && !snapshot && <div className="p-4 text-xs text-[var(--color-text-muted)]">Loading…</div>}
+                {snapshot?.runs.length === 0 && (
+                  <div className="p-5 text-xs leading-relaxed text-[var(--color-text-muted)]">
+                    {lang === 'zh' ? '还没有运行。请从上方选择任意模块开始。' : 'No runs yet. Choose any module above to begin.'}
+                  </div>
+                )}
+                {snapshot?.runs.slice().reverse().map((run) => {
+                  const meta = moduleMeta(run.module_type)
+                  return (
+                    <button
+                      key={run.run_id}
+                      type="button"
+                      onClick={() => selectRun(projectId, run.run_id)}
+                      className={cn(
+                        'w-full px-4 py-3 text-left hover:bg-[var(--color-bg-hover)]',
+                        selectedRunId === run.run_id && 'bg-[var(--color-accent)]/5',
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span>{meta.icon}</span>
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">{run.label}</span>
+                        <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', STATUS_STYLE[run.status])}>
+                          {run.status.replace('_', ' ')}
+                        </span>
+                      </div>
+                      <div className="mt-1 truncate pl-7 text-[10px] font-mono text-[var(--color-text-muted)]">{run.run_id}</div>
+                    </button>
+                  )
+                })}
+              </div>
+            </section>
+
+            <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-5">
+              {!selectedRun ? (
+                <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
+                  {lang === 'zh' ? '选择一个 ModuleRun 查看和控制' : 'Select a ModuleRun to inspect and control'}
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="flex items-start gap-3">
+                    <div className="text-2xl">{moduleMeta(selectedRun.module_type).icon}</div>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-base font-semibold text-[var(--color-text-primary)]">{selectedRun.label}</h3>
+                      <p className="mt-1 text-xs text-[var(--color-text-muted)]">
+                        {lang === 'zh' ? moduleMeta(selectedRun.module_type).zhDescription : moduleMeta(selectedRun.module_type).enDescription}
+                      </p>
+                    </div>
+                  </div>
+
+                  {activityByRun[selectedRun.run_id] && (
+                    <div className="truncate rounded-md bg-[var(--color-accent)]/8 px-3 py-2 text-xs text-[var(--color-accent)]">
+                      {activityByRun[selectedRun.run_id]}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-3 text-xs">
+                    <div className="rounded-lg bg-[var(--color-bg-tertiary)] p-3">
+                      <div className="text-[var(--color-text-muted)]">{lang === 'zh' ? '状态' : 'Status'}</div>
+                      <div className="mt-1 font-medium text-[var(--color-text-primary)]">{selectedRun.status.replace('_', ' ')}</div>
+                    </div>
+                    <div className="rounded-lg bg-[var(--color-bg-tertiary)] p-3">
+                      <div className="text-[var(--color-text-muted)]">{lang === 'zh' ? '版本' : 'Revision'}</div>
+                      <div className="mt-1 font-mono text-[var(--color-text-primary)]">{selectedRun.revision}</div>
+                    </div>
+                  </div>
+
+                  {typeof selectedRun.module_data.intent === 'string' && (
+                    <div>
+                      <div className="mb-1 text-xs font-medium text-[var(--color-text-secondary)]">
+                        {lang === 'zh' ? '本次目标' : 'Run intent'}
+                      </div>
+                      <div className="rounded-lg border border-[var(--color-border)] p-3 text-sm leading-relaxed text-[var(--color-text-secondary)]">
+                        {selectedRun.module_data.intent}
+                      </div>
+                    </div>
+                  )}
+
+                  {Boolean(selectedRun.module_data.recovery) && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-600">
+                      {lang === 'zh'
+                        ? '检测到上一次执行在安全边界确认前中断。为避免重复外部操作，本模块已暂停；请检查当前材料后再点击“继续”。'
+                        : 'The previous attempt ended before confirming a safe boundary. This Run is paused to avoid repeating uncertain external work; inspect it before choosing Resume.'}
+                    </div>
+                  )}
+
+                  {selectedRun.module_data.auto_handoff === true && (
+                    <div className="rounded-lg border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-3 text-xs leading-relaxed text-[var(--color-text-secondary)]">
+                      {lang === 'zh'
+                        ? '这是根据 Project 衔接策略自动创建的下游 Run。宽限期内你可以取消；之后发送消息即可开始。'
+                        : 'This downstream Run was created by the Project handoff policy. You may cancel it during the grace period, then start it by sending a message.'}
+                    </div>
+                  )}
+
+                  {(selectedRun.checkpoint_ref || selectedRun.attempts.length > 0) && (
+                    <div className="rounded-lg border border-[var(--color-border)] p-3 text-xs">
+                      <div className="font-medium text-[var(--color-text-secondary)]">
+                        {lang === 'zh' ? '恢复状态' : 'Recovery state'}
+                      </div>
+                      <div className="mt-1 text-[var(--color-text-muted)]">
+                        {lang === 'zh' ? `已记录 ${selectedRun.attempts.length} 次执行` : `${selectedRun.attempts.length} execution attempt(s) recorded`}
+                        {selectedRun.checkpoint_ref && (
+                          <span className="ml-2 font-mono">checkpoint {selectedRun.checkpoint_ref.slice(0, 8)}</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <RunControls projectId={projectId} run={selectedRun} onStartRun={startExistingRun} />
+
+                  {selectedRun.status === 'completed' && nextSelectedModule && (
+                    <div>
+                      <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">
+                        {lang === 'zh' ? '从此结果继续（创建新分支）' : 'Continue from this result (new branch)'}
+                      </div>
+                      {mustSelectRunCandidate && (
+                        <div className="mb-2 text-[10px] text-amber-600">
+                          {lang === 'zh'
+                            ? '请先在上方 Pipeline 中选择一个候选 item。'
+                            : 'Select one candidate item in the pipeline above first.'}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          disabled={creating !== null || mustSelectRunCandidate
+                            || (selectedRunCandidate?.kind === 'experiment' && selectedRunCandidate.status !== 'completed')}
+                          onClick={() => beginModule(
+                            nextSelectedModule,
+                            selectedRun,
+                            selectedRunCandidate ?? undefined,
+                          )}
+                          className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                        >
+                          {moduleMeta(nextSelectedModule).icon}{' '}
+                          {lang === 'zh' ? moduleMeta(nextSelectedModule).zh : moduleMeta(nextSelectedModule).en}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
-              {snapshot?.runs.slice().reverse().map((run) => {
-                const meta = moduleMeta(run.module_type)
-                return (
-                  <button
-                    key={run.run_id}
-                    type="button"
-                    onClick={() => selectRun(projectId, run.run_id)}
-                    className={cn(
-                      'w-full px-4 py-3 text-left hover:bg-[var(--color-bg-hover)]',
-                      selectedRunId === run.run_id && 'bg-[var(--color-accent)]/5',
-                    )}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span>{meta.icon}</span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--color-text-primary)]">{run.label}</span>
-                      <span className={cn('rounded px-1.5 py-0.5 text-[10px] font-medium', STATUS_STYLE[run.status])}>
-                        {run.status.replace('_', ' ')}
-                      </span>
-                    </div>
-                    <div className="mt-1 truncate pl-7 text-[10px] font-mono text-[var(--color-text-muted)]">{run.run_id}</div>
-                  </button>
-                )
-              })}
-            </div>
-          </section>
-
-          <section className="rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-5">
-            {!selectedRun ? (
-              <div className="flex h-full items-center justify-center text-xs text-[var(--color-text-muted)]">
-                {lang === 'zh' ? '选择一个 ModuleRun 查看和控制' : 'Select a ModuleRun to inspect and control'}
-              </div>
-            ) : (
-              <div className="space-y-5">
-                <div className="flex items-start gap-3">
-                  <div className="text-2xl">{moduleMeta(selectedRun.module_type).icon}</div>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-base font-semibold text-[var(--color-text-primary)]">{selectedRun.label}</h3>
-                    <p className="mt-1 text-xs text-[var(--color-text-muted)]">
-                      {lang === 'zh' ? moduleMeta(selectedRun.module_type).zhDescription : moduleMeta(selectedRun.module_type).enDescription}
-                    </p>
-                  </div>
-                </div>
-
-                {activityByRun[selectedRun.run_id] && (
-                  <div className="truncate rounded-md bg-[var(--color-accent)]/8 px-3 py-2 text-xs text-[var(--color-accent)]">
-                    {activityByRun[selectedRun.run_id]}
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg bg-[var(--color-bg-tertiary)] p-3">
-                    <div className="text-[var(--color-text-muted)]">{lang === 'zh' ? '状态' : 'Status'}</div>
-                    <div className="mt-1 font-medium text-[var(--color-text-primary)]">{selectedRun.status.replace('_', ' ')}</div>
-                  </div>
-                  <div className="rounded-lg bg-[var(--color-bg-tertiary)] p-3">
-                    <div className="text-[var(--color-text-muted)]">{lang === 'zh' ? '版本' : 'Revision'}</div>
-                    <div className="mt-1 font-mono text-[var(--color-text-primary)]">{selectedRun.revision}</div>
-                  </div>
-                </div>
-
-                {typeof selectedRun.module_data.intent === 'string' && (
-                  <div>
-                    <div className="mb-1 text-xs font-medium text-[var(--color-text-secondary)]">
-                      {lang === 'zh' ? '本次目标' : 'Run intent'}
-                    </div>
-                    <div className="rounded-lg border border-[var(--color-border)] p-3 text-sm leading-relaxed text-[var(--color-text-secondary)]">
-                      {selectedRun.module_data.intent}
-                    </div>
-                  </div>
-                )}
-
-                {Boolean(selectedRun.module_data.recovery) && (
-                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs leading-relaxed text-amber-600">
-                    {lang === 'zh'
-                      ? '检测到上一次执行在安全边界确认前中断。为避免重复外部操作，本模块已暂停；请检查当前材料后再点击“继续”。'
-                      : 'The previous attempt ended before confirming a safe boundary. This Run is paused to avoid repeating uncertain external work; inspect it before choosing Resume.'}
-                  </div>
-                )}
-
-                {selectedRun.module_data.auto_handoff === true && (
-                  <div className="rounded-lg border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/5 p-3 text-xs leading-relaxed text-[var(--color-text-secondary)]">
-                    {lang === 'zh'
-                      ? '这是根据 Project 衔接策略自动创建的下游 Run。宽限期内你可以取消；之后发送消息即可开始。'
-                      : 'This downstream Run was created by the Project handoff policy. You may cancel it during the grace period, then start it by sending a message.'}
-                  </div>
-                )}
-
-                {(selectedRun.checkpoint_ref || selectedRun.attempts.length > 0) && (
-                  <div className="rounded-lg border border-[var(--color-border)] p-3 text-xs">
-                    <div className="font-medium text-[var(--color-text-secondary)]">
-                      {lang === 'zh' ? '恢复状态' : 'Recovery state'}
-                    </div>
-                    <div className="mt-1 text-[var(--color-text-muted)]">
-                      {lang === 'zh' ? `已记录 ${selectedRun.attempts.length} 次执行` : `${selectedRun.attempts.length} execution attempt(s) recorded`}
-                      {selectedRun.checkpoint_ref && (
-                        <span className="ml-2 font-mono">checkpoint {selectedRun.checkpoint_ref.slice(0, 8)}</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <RunControls projectId={projectId} run={selectedRun} onStartRun={startExistingRun} />
-
-                {selectedRun.status === 'completed' && nextSelectedModule && (
-                  <div>
-                    <div className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">
-                      {lang === 'zh' ? '从此结果继续（创建新分支）' : 'Continue from this result (new branch)'}
-                    </div>
-                    {mustSelectRunCandidate && (
-                      <div className="mb-2 text-[10px] text-amber-600">
-                        {lang === 'zh'
-                          ? '请先在上方 Pipeline 中选择一个候选 item。'
-                          : 'Select one candidate item in the pipeline above first.'}
-                      </div>
-                    )}
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={creating !== null || mustSelectRunCandidate}
-                        onClick={() => beginModule(
-                          nextSelectedModule,
-                          selectedRun,
-                          selectedRunCandidate ?? undefined,
-                        )}
-                        className="rounded-md border border-[var(--color-border)] px-2.5 py-1.5 text-xs text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/50 hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
-                      >
-                        {moduleMeta(nextSelectedModule).icon}{' '}
-                        {lang === 'zh' ? moduleMeta(nextSelectedModule).zh : moduleMeta(nextSelectedModule).en}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-          </section>
-        </div>
+            </section>
+          </div>
+        </WorkflowDebugPanel>
       </div>
     </div>
   )

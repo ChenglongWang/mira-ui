@@ -8,6 +8,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useSkillPluginsStore } from '@/stores/skillPluginsStore'
+import { useUiStore } from '@/stores/uiStore'
 import { useWorkflowStore } from '@/stores/workflowStore'
 
 const initialAgentState = useAgentStore.getState()
@@ -15,6 +16,7 @@ const initialProjectState = useProjectStore.getState()
 const initialChatState = useChatStore.getState()
 const initialSettingsState = useSettingsStore.getState()
 const initialSkillPluginsState = useSkillPluginsStore.getState()
+const initialUiState = useUiStore.getState()
 const initialWorkflowState = useWorkflowStore.getState()
 
 describe('AgentPanel keyboard behavior', () => {
@@ -25,6 +27,7 @@ describe('AgentPanel keyboard behavior', () => {
     useChatStore.setState(initialChatState, true)
     useSettingsStore.setState(initialSettingsState, true)
     useSkillPluginsStore.setState(initialSkillPluginsState, true)
+    useUiStore.setState(initialUiState, true)
     useWorkflowStore.setState(initialWorkflowState, true)
 
     useSettingsStore.setState({ language: 'en' })
@@ -357,6 +360,25 @@ describe('AgentPanel keyboard behavior', () => {
       .map((call) => call[0])
       .find((payload) => payload?.type === 'message')
     expect(messageCall).not.toHaveProperty('agent_profile')
+  })
+
+  it('opens project promotion without prefilling the research description', () => {
+    useChatStore.setState({
+      chats: [{ id: 'chat-promote', title: 'MRI study', createdAt: 0, updatedAt: 0 }],
+      activeChatId: 'chat-promote',
+      workspaceKey: 'ws',
+    })
+    useProjectStore.setState({ appMode: 'normal', selectedTaskId: null })
+    useAgentStore.setState({ logsByProject: { 'chat-promote': [] } })
+
+    render(<AgentPanel />)
+    fireEvent.click(screen.getByRole('button', { name: 'Turn into project' }))
+
+    expect(useUiStore.getState()).toMatchObject({
+      newProjectOpen: true,
+      newProjectFromChatId: 'chat-promote',
+    })
+    expect(useUiStore.getState()).not.toHaveProperty('newProjectDescriptionPrefill')
   })
 
   it('shows the AUTO badge when project mode is on auto', () => {
