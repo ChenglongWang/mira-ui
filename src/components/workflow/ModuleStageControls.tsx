@@ -16,6 +16,7 @@ import type { PipelineStage, WorkflowModuleType, WorkflowRun } from '@/types'
 import { buildWorkflowCandidates, resolveWorkflowCandidate } from '@/lib/workflowCandidates'
 import { WorkflowCandidateList } from './WorkflowCandidateList'
 import { WorkflowInteractionPanel } from './WorkflowInteractionPanel'
+import { ExperimentExecutionMode } from './ExperimentExecutionMode'
 
 const MODULE_META: Record<WorkflowModuleType, {
   icon: string
@@ -121,6 +122,7 @@ export function ModuleStageControls() {
   const [targetModule, setTargetModule] = useState<WorkflowModuleType | null>(null)
   const [intent, setIntent] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
+  const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [candidateListCollapsed, setCandidateListCollapsed] = useState(false)
@@ -143,6 +145,7 @@ export function ModuleStageControls() {
   const openTarget = (moduleType: WorkflowModuleType) => {
     const label = lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en.toLowerCase()
     setTargetModule(moduleType)
+    setExperimentMode('auto')
     setIntent(
       lang === 'zh'
         ? `基于上游候选“${selectedCandidate?.label ?? selectedRun.label}”继续${label}。`
@@ -182,6 +185,7 @@ export function ModuleStageControls() {
     const moduleData: Record<string, unknown> = {
       confirmation_policy: { mode: 'required' },
     }
+    if (targetModule === 'experiment') moduleData.experiment_execution_mode = experimentMode
     if (selectedCandidate) {
       moduleData.upstream_selection = {
         module_type: selectedRun.module_type,
@@ -401,6 +405,10 @@ export function ModuleStageControls() {
               onChange={(event) => setIntent(event.target.value)}
               className="mt-2 min-h-24 w-full resize-y rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)]"
             />
+
+            {targetModule === 'experiment' && (
+              <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={pending} />
+            )}
 
             {targetModule === 'delivery' && (
               <fieldset className="mt-4">

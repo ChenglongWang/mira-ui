@@ -29,6 +29,7 @@ import {
   type WorkflowCandidateItem,
 } from '@/lib/workflowCandidates'
 import { PipelineOverview } from './PipelineOverview'
+import { ExperimentExecutionMode } from './ExperimentExecutionMode'
 import { WorkflowDebugPanel } from './WorkflowDebugPanel'
 
 const MODULES: Array<{
@@ -288,6 +289,7 @@ export function WorkflowWorkspace() {
   const [maxExperiments, setMaxExperiments] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
+  const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
   const [startError, setStartError] = useState<string | null>(null)
   const selectedRun = useMemo(
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId) ?? null,
@@ -316,6 +318,7 @@ export function WorkflowWorkspace() {
     sourceCandidate?: WorkflowCandidateItem,
   ) => {
     setStartingModule(moduleType)
+    setExperimentMode('auto')
     setContinuationSource(sourceRun
       ? {
           parentRunId: sourceCandidate?.runId ?? sourceRun.run_id,
@@ -430,6 +433,7 @@ export function WorkflowWorkspace() {
       if (references.trim()) moduleData.references = references.trim()
     }
     if (startingModule === 'experiment') {
+      moduleData.experiment_execution_mode = experimentMode
       const normalizedGoals: AutomationGoal[] = []
       for (let index = 0; index < goals.length; index += 1) {
         const metric = goals[index].metric.trim()
@@ -720,6 +724,7 @@ export function WorkflowWorkspace() {
 
               {startingModule === 'experiment' && (
                 <div className="mt-4 space-y-4">
+                  <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={creating !== null} />
                   <div>
                     <div className="flex items-center justify-between gap-3">
                       <label className="text-xs font-medium text-[var(--color-text-secondary)]">

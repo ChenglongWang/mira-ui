@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import type { Language } from '@/stores/settingsStore'
-import { wsClient } from '@/services/websocket'
 import type { Stats } from '@/types'
 import { QueueItem } from './QueueItem'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
@@ -14,8 +13,6 @@ import { cn } from '@/lib/utils'
 import { t } from '@/i18n'
 import { useOrganizationStore, type OrganizationKind } from '@/stores/organizationStore'
 
-const MODE_SWITCH_POLL_INTERVAL_MS = 1000
-const MODE_SWITCH_POLL_TIMEOUT_MS = 20000
 const ORGANIZATION_DRAG_TYPE = 'application/x-mira-organization-item'
 const UNCATEGORIZED_ID = '__uncategorized__'
 
@@ -26,18 +23,13 @@ export function ProjectQueue() {
     selectedTaskId,
     setAppMode,
     selectTask,
-    mode,
-    setMode,
     renameTask,
     deleteTask,
     duplicateTask,
-    refreshPlan,
     stats,
   } = useProjectStore()
   const lang = useSettingsStore((s) => s.language)
   const pushSystemMessage = useUiStore((s) => s.pushSystemMessage)
-  const modePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const modePollDeadlineRef = useRef<number>(0)
 
   const handleDelete = async (id: string, deleteFiles: boolean) => {
     try {
@@ -123,52 +115,6 @@ export function ProjectQueue() {
     setAppMode('project')
   }
 
-  const stopModePoll = () => {
-    if (!modePollRef.current) return
-    clearInterval(modePollRef.current)
-    modePollRef.current = null
-  }
-
-  const startModeSyncPolling = (sessionId: string) => {
-    stopModePoll()
-    modePollDeadlineRef.current = Date.now() + MODE_SWITCH_POLL_TIMEOUT_MS
-
-    const tick = async () => {
-      await useProjectStore.getState().refreshPlan(sessionId)
-      const task = useProjectStore.getState().tasks.find((t) => t.id === sessionId)
-      const hasRunningExperiment = !!task?.experiments.some((e) => e.status === 'running')
-      const timedOut = Date.now() >= modePollDeadlineRef.current
-      if (!hasRunningExperiment || timedOut) {
-        stopModePoll()
-      }
-    }
-
-    void tick()
-    modePollRef.current = setInterval(() => {
-      void tick()
-    }, MODE_SWITCH_POLL_INTERVAL_MS)
-  }
-
-  const handleModeSwitch = (nextMode: 'manual' | 'auto') => {
-    if (appMode === 'normal') return
-    if (mode === nextMode) return
-    setMode(nextMode)
-    if (!selectedTaskId) return
-
-    wsClient.send({
-      type: 'set_mode',
-      content: '',
-      session_id: selectedTaskId,
-      user_id: 'ui_user',
-      mode: nextMode,
-    })
-
-    void refreshPlan(selectedTaskId)
-    startModeSyncPolling(selectedTaskId)
-  }
-
-  useEffect(() => () => stopModePoll(), [])
-  const isAutoMode = mode === 'auto'
 
   const showChats = tab === 'chats'
   const currentKind: OrganizationKind = showChats ? 'chat' : 'project'
@@ -405,39 +351,6 @@ export function ProjectQueue() {
         )}
       </div>
 
-      {appMode === 'project' && !showChats && (
-        <div className="p-3 border-t border-[var(--color-border)] flex items-center justify-center">
-          <div className="relative w-full max-w-[220px] rounded-full border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] p-1">
-            <span
-              aria-hidden
-              className={cn(
-                'pointer-events-none absolute left-1 top-1 bottom-1 rounded-full transition-transform duration-200 ease-out',
-                isAutoMode ? 'bg-[var(--color-success)]' : 'bg-[var(--color-accent)]',
-              )}
-              style={{
-                width: 'calc(50% - 0.25rem)',
-                transform: isAutoMode ? 'translateX(100%)' : 'translateX(0%)',
-              }}
-            />
-
-            <div className="relative z-10 grid grid-cols-2">
-              {(['manual', 'auto'] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => handleModeSwitch(m)}
-                  className={cn(
-                    'py-1.5 text-xs font-medium rounded-full transition-colors',
-                    mode === m ? 'text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]',
-                  )}
-                >
-                  {t(m, lang)}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
     </aside>
   )
 }

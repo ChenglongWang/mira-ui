@@ -288,7 +288,6 @@ export function AgentPanel() {
     selectedWorkflowRunId ? s.activityByRun[selectedWorkflowRunId] : undefined
   ))
   const activeStage = useProjectStore((s) => s.activeStage)
-  const mode = useProjectStore((s) => s.mode)
   const activeChatId = useChatStore((s) => s.activeChatId)
   const touchChat = useChatStore((s) => s.touchChat)
   const openNewProject = useUiStore((s) => s.openNewProject)
@@ -307,9 +306,9 @@ export function AgentPanel() {
     || selectedWorkflowRun.status === 'waiting_input'
   )
   const composerSessionId = moduleConversationBlocked ? null : sessionId
-  // Auto / manual is a project-mode concept — in chat the toggle
-  // is hidden, so the AUTO badge in the header should be hidden too.
-  const isAuto = appMode === 'project' && mode === 'auto'
+  const experimentMode = appMode === 'project' && selectedWorkflowRun?.module_type === 'experiment'
+    ? (selectedWorkflowRun.module_data.experiment_execution_mode === 'manual' ? 'MANUAL' : 'AUTO')
+    : null
 
   const logs = conversationId ? (logsByProject[conversationId] ?? []) : []
   // Streaming is tracked per session so a different session's activity never
@@ -572,9 +571,9 @@ export function AgentPanel() {
         <span className="text-[10px] text-[var(--color-text-muted)]">
           {connected ? t('connected', lang) : t('disconnected', lang)}
         </span>
-        {isAuto && (
+        {experimentMode && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] font-medium">
-            AUTO
+            {experimentMode}
           </span>
         )}
         {sessionId && isChat && (

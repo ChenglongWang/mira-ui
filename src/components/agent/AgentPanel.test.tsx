@@ -381,7 +381,7 @@ describe('AgentPanel keyboard behavior', () => {
     expect(useUiStore.getState()).not.toHaveProperty('newProjectDescriptionPrefill')
   })
 
-  it('shows the AUTO badge when project mode is on auto', () => {
+  it('does not show a global AUTO badge without an experiment Run', () => {
     useProjectStore.setState({
       appMode: 'project',
       selectedTaskId: 'PRJ-0001',
@@ -391,7 +391,19 @@ describe('AgentPanel keyboard behavior', () => {
 
     render(<AgentPanel />)
 
-    expect(screen.getByText('AUTO')).toBeInTheDocument()
+    expect(screen.queryByText('AUTO')).not.toBeInTheDocument()
+  })
+
+  it.each(['auto', 'manual'] as const)('shows the selected experiment mode: %s', (mode) => {
+    useProjectStore.setState({ appMode: 'project', selectedTaskId: 'PRJ-0001', mode: mode === 'auto' ? 'manual' : 'auto' })
+    useWorkflowStore.setState({
+      selectedRunByProject: { 'PRJ-0001': 'experiment-run' },
+      snapshots: { 'PRJ-0001': { runs: [{ run_id: 'experiment-run', module_type: 'experiment',
+        status: 'running', module_data: { experiment_execution_mode: mode } }] } },
+    } as never)
+    render(<AgentPanel />)
+    expect(screen.getByText(mode.toUpperCase())).toBeInTheDocument()
+    expect(screen.queryByText(mode === 'auto' ? 'MANUAL' : 'AUTO')).not.toBeInTheDocument()
   })
 
   it('hides the AUTO badge in normal mode even when mode is still auto', () => {

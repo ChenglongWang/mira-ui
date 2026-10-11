@@ -35,13 +35,13 @@ describe('ProjectQueue mode switch', () => {
     expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument()
   })
 
-  it('shows manual and auto controls in project mode', () => {
+  it('does not expose the legacy global execution toggle in project mode', () => {
     useProjectStore.setState({ appMode: 'project', mode: 'auto' })
 
     render(<ProjectQueue />)
 
-    expect(screen.getByRole('button', { name: 'Manual' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Auto' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manual' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument()
   })
 
   it('groups chats in shared folders and filters by title', () => {

@@ -178,6 +178,7 @@ describe('WorkflowWorkspace module entry', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Research.*Start module/i }))
     expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manual' })).not.toBeInTheDocument()
 
     const intent = screen.getByLabelText('Goal for this run')
     expect(intent).toHaveValue('Why?')
@@ -249,10 +250,13 @@ describe('WorkflowWorkspace module entry', () => {
     expect(researchStage).not.toHaveClass('h-full')
   })
 
-  it('passes experiment limits and stopping conditions into the ModuleRun', async () => {
+  it.each(['auto', 'manual'] as const)('persists %s mode with experiment limits and stopping conditions', async (mode) => {
+    useProjectStore.setState({ mode: 'manual' }) // legacy preference must not set the new default
     render(<WorkflowWorkspace />)
 
     fireEvent.click(screen.getByRole('button', { name: /Experiment.*Start module/i }))
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true')
+    if (mode === 'manual') fireEvent.click(screen.getByRole('button', { name: 'Manual' }))
     fireEvent.click(screen.getByRole('button', { name: '+ Add stopping condition' }))
     fireEvent.change(screen.getByLabelText('Stopping metric 1'), {
       target: { value: 'accuracy' },
@@ -277,6 +281,7 @@ describe('WorkflowWorkspace module entry', () => {
         moduleData: {
           confirmation_policy: { mode: 'required' },
           intent: 'Why?',
+          experiment_execution_mode: mode,
           automation_policy: {
             logic: 'AND',
             goals: [{ metric: 'accuracy', operator: '>=', value: 0.95 }],

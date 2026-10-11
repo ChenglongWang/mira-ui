@@ -119,6 +119,23 @@ describe('ModuleStageControls', () => {
     expect(screen.getByText('2 artifacts')).toBeInTheDocument()
   })
 
+  it.each(['auto', 'manual'] as const)('starts a downstream experiment with its own %s mode', async (mode) => {
+    const run = makeRun({ outputs: ['artifact-1'] })
+    const snapshot = makeSnapshot(run)
+    useProjectStore.setState({ mode: 'manual' })
+    useWorkflowStore.setState({ snapshots: { 'PRJ-1': snapshot }, selectedRunByProject: { 'PRJ-1': run.run_id } })
+    vi.mocked(fetchWorkflowSnapshot).mockResolvedValue(snapshot)
+    vi.mocked(createWorkflowRun).mockResolvedValue({ run_id: 'experiment-run', project_sequence: 3 })
+    render(<ModuleStageControls />)
+    fireEvent.click(screen.getByRole('button', { name: /Continue to Experiment/ }))
+    expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true')
+    if (mode === 'manual') fireEvent.click(screen.getByRole('button', { name: 'Manual' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create branch and start' }))
+    await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
+      moduleType: 'experiment', moduleData: expect.objectContaining({ experiment_execution_mode: mode }),
+    })))
+  })
+
   it('continues to Delivery inside the module page with one of the four legacy formats', async () => {
     const run = makeRun({ module_type: 'experiment' })
     const snapshot = makeSnapshot(run)
@@ -142,6 +159,7 @@ describe('ModuleStageControls', () => {
     expect(screen.getByRole('button', { name: /Journal Article/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Presentation/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Meta data/ })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Manual' })).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('Goal for this run'), {
       target: { value: 'Prepare the manuscript for journal submission' },
