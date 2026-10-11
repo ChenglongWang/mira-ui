@@ -3,9 +3,8 @@ import { useSettingsStore, type DeploymentMode, type Theme, type Language, type 
 import {
   bootstrapLocalEngine,
   doctorLocalEngine,
+  hasDesktopEngineManager,
   repairLocalEngineService,
-  startLocalEngine,
-  stopLocalEngine,
   upgradeLocalEngine,
 } from '@/services/desktop'
 import { probeEngineCompatibility } from '@/services/engine'
@@ -20,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { useAgentStore } from '@/stores/agentStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useUiStore } from '@/stores/uiStore'
+import { EngineLifecycleControls } from './EngineLifecycleControls'
 
 const LOCAL_API_URL = 'http://127.0.0.1:18790/api'
 const LOCAL_WS_URL = 'ws://127.0.0.1:18790/ws'
@@ -109,11 +109,6 @@ function mergePreservingEdits(
   return next
 }
 
-function localEngineAlreadyUp(): boolean {
-  return useAgentStore.getState().connected
-    && useSettingsStore.getState().localEnginePhase === 'ready'
-}
-
 function workspacePathChanged(previous: string, next: string): boolean {
   return previous.trim() !== next.trim()
 }
@@ -168,25 +163,8 @@ export function SettingsModal() {
     try {
       const targetApiUrl = mode === 'localBundle' ? LOCAL_API_URL : (apiUrlOverride?.trim() || draft.apiUrl.trim())
 
-      // Re-bootstrapping re-resolves and re-hashes the bundled engine on every
-      // open, which is the main source of the "Settings is slow" lag. When the
-      // engine is already running and connected we can skip straight to the
-      // (cheap) config fetch.
-      if (mode === 'localBundle' && !localEngineAlreadyUp()) {
-        const localState = await bootstrapLocalEngine()
-        if (localState) {
-          store.setLocalEngineBootstrap({
-            phase: localState.phase,
-            message: localState.message,
-            executablePath: localState.executablePath,
-            version: localState.version,
-            operation: localState.operation,
-          })
-          if (localState.phase !== 'ready') {
-            throw new Error(localState.message)
-          }
-        }
-      }
+      // Opening Settings and refreshing config are read-only. In particular,
+      // never restart an engine the user deliberately stopped in this dialog.
 
       const payload = await fetchRuntimeConfig(targetApiUrl)
       if (loadTokenRef.current !== token) return
@@ -241,6 +219,7 @@ export function SettingsModal() {
   if (!settingsOpen) return null
 
   const handleSwitchMode = (mode: DeploymentMode) => {
+    if (busy) return
     const storedRemote = mode === 'remoteManual'
       ? latestStoredProfile(store.engineProfiles, 'remoteManual')
       : null
@@ -297,24 +276,8 @@ export function SettingsModal() {
       const targetApiUrl = local ? LOCAL_API_URL : nextApiUrl
       const targetWsUrl = local ? LOCAL_WS_URL : nextWsUrl
 
-      // Local bundle: make sure the engine is running before we talk to it.
-      // Skip the (slow) re-bootstrap when it is already up and connected.
-      if (local && !localEngineAlreadyUp()) {
-        const localState = await bootstrapLocalEngine()
-        if (!localState) {
-          throw new Error(t('settingsDesktopBundleUnavailable', curLang))
-        }
-        store.setLocalEngineBootstrap({
-          phase: localState.phase,
-          message: localState.message,
-          executablePath: localState.executablePath,
-          version: localState.version,
-          operation: localState.operation,
-        })
-        if (localState.phase !== 'ready') {
-          throw new Error(localState.message)
-        }
-      }
+      // Saving preferences must not undo an explicit Stop. Engine lifecycle
+      // is handled by the dedicated controls; runtime writes require it online.
 
       const switchedEngine = store.deploymentMode !== draft.deploymentMode
         || endpointChanged(previousApiUrl, previousWsUrl, targetApiUrl, targetWsUrl)
@@ -363,40 +326,6 @@ export function SettingsModal() {
       }
 
       closeSettings()
-    } catch (error) {
-      setFeedbackError(true)
-      setFeedback(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleRestartEngine = async () => {
-    setBusy(true)
-    setFeedbackError(false)
-    setFeedback('Restarting local engine...')
-    try {
-      await stopLocalEngine()
-      await startLocalEngine()
-      const localState = await bootstrapLocalEngine()
-      if (localState) {
-        store.setLocalEngineBootstrap({
-          phase: localState.phase,
-          message: localState.message,
-          executablePath: localState.executablePath,
-          version: localState.version,
-          operation: localState.operation,
-        })
-      }
-      const probe = await probeEngineCompatibility(LOCAL_API_URL)
-      store.setEngineBootstrap({
-        status: probe.status,
-        message: probe.status === 'compatible' ? null : probe.message,
-        version: probe.version,
-        uptimeSeconds: probe.uptimeSeconds,
-      })
-      setFeedback(probe.status === 'compatible' ? 'Local engine restarted and verified.' : probe.message)
-      setFeedbackError(probe.status !== 'compatible')
     } catch (error) {
       setFeedbackError(true)
       setFeedback(error instanceof Error ? error.message : String(error))
@@ -506,6 +435,7 @@ export function SettingsModal() {
           </h2>
           <button
             onClick={closeSettings}
+            disabled={busy}
             className="text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] transition-colors text-lg leading-none"
           >
             ✕
@@ -719,22 +649,20 @@ export function SettingsModal() {
                     )}
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <ActionButton disabled={busy} onClick={handleRepairEngine}>
+                    <ActionButton disabled={busy || !hasDesktopEngineManager()} onClick={handleRepairEngine}>
                       Repair service
                     </ActionButton>
-                    <ActionButton disabled={busy} onClick={handleRestartEngine}>
-                      Restart local engine
-                    </ActionButton>
-                    <ActionButton disabled={busy} onClick={handleDoctorEngine}>
+                    <ActionButton disabled={busy || !hasDesktopEngineManager()} onClick={handleDoctorEngine}>
                       Run doctor
                     </ActionButton>
-                    <ActionButton disabled={busy} onClick={handleUpgradeEngine}>
+                    <ActionButton disabled={busy || !hasDesktopEngineManager()} onClick={handleUpgradeEngine}>
                       Upgrade local engine
                     </ActionButton>
                     <ActionButton disabled={busy || runtimeLoading} onClick={() => void loadRuntimeConfig('localBundle', LOCAL_API_URL, true)}>
                       {runtimeLoading ? 'Refreshing...' : 'Refresh config'}
                     </ActionButton>
                   </div>
+                  <EngineLifecycleControls busy={busy || runtimeLoading} onBusyChange={setBusy} />
                 </Section>
               )}
             </div>
@@ -751,6 +679,7 @@ export function SettingsModal() {
         <div className="flex justify-end gap-3 px-6 py-4 border-t border-[var(--color-border)]">
           <button
             onClick={closeSettings}
+            disabled={busy}
             className="px-4 py-2 text-sm rounded-lg border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           >
             {t('cancel', curLang)}

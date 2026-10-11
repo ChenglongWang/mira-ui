@@ -642,9 +642,6 @@ export class LocalEngineManager {
 
   async status(): Promise<{ result: EngineCommandResult; payload: EngineStatusPayload | null }> {
     const result = await this.runCommand(['status'])
-    if (!result.ok) {
-      return { result, payload: null }
-    }
     try {
       return { result, payload: JSON.parse(result.stdout) as EngineStatusPayload }
     } catch {
@@ -668,6 +665,13 @@ export class LocalEngineManager {
       return this.runCommandElevated(this.commandWithHome('stop'), { timeoutMs: REPAIR_TIMEOUT_MS })
     }
     return this.runCommand(['stop'])
+  }
+
+  async restart(): Promise<EngineCommandResult> {
+    if (process.platform === 'win32') {
+      return this.runCommandElevated(this.commandWithHome('restart'), { timeoutMs: REPAIR_TIMEOUT_MS })
+    }
+    return this.runCommand(['restart'])
   }
 
   private installServiceArgs(port = DEFAULT_PORT): string[] {

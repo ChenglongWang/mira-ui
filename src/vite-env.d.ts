@@ -92,6 +92,7 @@ interface Window {
       command: string[]
       executablePath: string | null
     }>
+    restartLocalEngine?: () => Promise<import('./services/desktop').LocalEngineCommandResult>
     doctorLocalEngine?: () => Promise<{
       ok: boolean
       code: number

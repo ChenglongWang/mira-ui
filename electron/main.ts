@@ -50,6 +50,7 @@ function initializeApp() {
   ipcMain.handle('engine:status', async () => engineManager.status())
   ipcMain.handle('engine:start', async () => engineManager.start())
   ipcMain.handle('engine:stop', async () => engineManager.stop())
+  ipcMain.handle('engine:restart', async () => engineManager.restart())
   ipcMain.handle('engine:doctor', async () => engineManager.doctor())
   ipcMain.handle('engine:install-service', async () => engineManager.installService())
   ipcMain.handle('engine:repair-service', async () => engineManager.repairLocalEngineService())
