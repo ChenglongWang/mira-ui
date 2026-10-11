@@ -32,6 +32,43 @@ function makeRun(overrides: Partial<WorkflowRun>): WorkflowRun {
 }
 
 describe('workflowCandidates', () => {
+  it('groups a selected presentation and its editable source into one delivery', () => {
+    const run = makeRun({ module_type: 'delivery', outputs: ['pdf', 'pptx'],
+      module_data: { delivery_format: 'presentation', output_path: 'result/exports/presentation.pdf' },
+    })
+    const candidates = buildWorkflowCandidates([run], 'delivery')
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toMatchObject({
+      itemId: run.run_id, label: 'presentation.pdf', artifactIds: ['pdf', 'pptx'], status: 'completed',
+    })
+  })
+
+  it.each(['experiment_report', 'paper_article', 'presentation', 'metadata'])(
+    'keeps %s delivery packages separate across runs and restores legacy file selections', (format) => {
+      const first = makeRun({ module_type: 'delivery', outputs: ['main', 'source'],
+        module_data: { delivery_format: format },
+      })
+      const second = makeRun({ ...first, run_id: 'run-2', outputs: ['other'] })
+      const candidates = buildWorkflowCandidates([first, second], 'delivery')
+      expect(candidates).toHaveLength(2)
+      expect(candidates.map((item) => item.artifactIds)).toEqual([['main', 'source'], ['other']])
+      expect(resolveWorkflowCandidate(candidates, { runId: first.run_id, itemId: 'source' }, second.run_id)?.itemId)
+        .toBe(first.run_id)
+      expect(resolveWorkflowCandidate(candidates, null)).toBeNull()
+    },
+  )
+
+  it('does not invent completed delivery outputs or group unconfigured legacy deliveries', () => {
+    const pending = makeRun({ module_type: 'delivery', status: 'waiting_input', outputs: [],
+      module_data: { delivery_format: 'presentation' },
+    })
+    expect(buildWorkflowCandidates([pending], 'delivery')[0]).toMatchObject({
+      status: 'waiting_input', artifactIds: [],
+    })
+    const legacy = makeRun({ module_type: 'delivery', outputs: ['one', 'two'] })
+    expect(buildWorkflowCandidates([legacy], 'delivery').map((item) => item.itemId)).toEqual(['one', 'two'])
+  })
+
   it('groups two registered experiments into two candidates, not four output files', () => {
     const run = makeRun({ module_type: 'experiment', outputs: ['report', 'bundle', 'figure', 'csv'],
       module_data: { experiments: [

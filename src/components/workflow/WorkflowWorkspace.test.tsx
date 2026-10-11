@@ -484,9 +484,10 @@ describe('WorkflowWorkspace module entry', () => {
           module_type: 'delivery',
           label: 'Delivery candidate',
           status: 'completed',
-          outputs: ['delivery-report'],
+          outputs: ['delivery-report', 'delivery-source'],
           module_data: {
             parent_run_id: 'experiment-run',
+            delivery_format: 'presentation',
             output_path: 'result/exports/report.pdf',
             upstream_selection: { run_id: 'experiment-run', item_id: 'experiment-result' },
           },
@@ -541,6 +542,8 @@ describe('WorkflowWorkspace module entry', () => {
     )
     expect(screen.getByRole('button', { name: 'Select candidate: Validated result' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Select candidate: report.pdf' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select candidate: report.pdf' })).toHaveTextContent('2 artifacts')
+    expect(screen.getAllByRole('button', { name: /^Select candidate:/ })).toHaveLength(5)
     expect(screen.queryByRole('button', { name: 'Select candidate: Alternative validated result' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Select candidate: Direction B' }))

@@ -199,6 +199,26 @@ export function buildWorkflowCandidates(
       })
     }
 
+    // A single-format delivery is one deliverable, not one candidate per file:
+    // e.g. the rendered PDF and editable PPTX belong to the same presentation.
+    // Keep explicit alternatives above and unconfigured legacy Runs unchanged.
+    if (seenItemIds.size === 0 && moduleType === 'delivery'
+      && text(run.module_data.delivery_format) && run.outputs.length > 0) {
+      candidates.push({
+        itemId: run.run_id,
+        runId: run.run_id,
+        moduleType,
+        label: text(run.module_data.output_path).split(/[\\/]/).filter(Boolean).at(-1) || run.label,
+        description: text(run.module_data.completion_summary) || undefined,
+        artifactIds: [...run.outputs],
+        status: run.status,
+        kind: 'run',
+        selectedByRun: false,
+        updatedAt: run.updated_at,
+      })
+      continue
+    }
+
     // Structured choices are the candidates; their Run outputs are supporting
     // handoff material, not extra alternatives. Runs without structured
     // choices expose each output Artifact as its own selectable candidate.
@@ -248,6 +268,12 @@ export function resolveWorkflowCandidate(
       candidate.runId === selection.runId && candidate.itemId === selection.itemId
     ))
     if (explicit) return explicit
+    // Existing sessions may still remember a file-level delivery selection.
+    const delivery = candidates.find((candidate) => (
+      candidate.runId === selection.runId && candidate.moduleType === 'delivery'
+      && candidate.kind === 'run' && candidate.artifactIds.includes(selection.itemId)
+    ))
+    if (delivery) return delivery
   }
   const selectedByRun = candidates.find((candidate) => candidate.selectedByRun)
   if (selectedByRun) return selectedByRun

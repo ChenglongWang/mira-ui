@@ -103,6 +103,22 @@ describe('ModuleStageControls', () => {
     ;(wsClient as { connected: boolean }).connected = true
   })
 
+  it('shows one selected delivery with both PDF and PPTX attachments in the module page', () => {
+    const run = makeRun({ module_type: 'delivery', outputs: ['pdf', 'pptx'],
+      module_data: { delivery_format: 'presentation', output_path: 'result/exports/presentation.pdf' },
+    })
+    useProjectStore.setState({ activeStage: 'result' })
+    useWorkflowStore.setState({
+      snapshots: { 'PRJ-1': makeSnapshot(run) },
+      selectedRunByProject: { 'PRJ-1': run.run_id },
+      selectedCandidateByProject: { 'PRJ-1': { delivery: { runId: run.run_id, itemId: 'pptx' } } },
+    })
+    render(<ModuleStageControls />)
+    expect(screen.getAllByRole('button', { name: /^Select candidate:/ })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Select candidate: presentation.pdf' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('2 artifacts')).toBeInTheDocument()
+  })
+
   it('continues to Delivery inside the module page with one of the four legacy formats', async () => {
     const run = makeRun({ module_type: 'experiment' })
     const snapshot = makeSnapshot(run)

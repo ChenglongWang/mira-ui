@@ -186,7 +186,7 @@ export function PipelineOverview({
               </div>
 
               <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2 border-t border-[var(--color-border)] pt-3">
-                {selected ? (
+                {selected && (
                   <button
                     type="button"
                     onClick={() => onOpen(selected)}
@@ -194,10 +194,6 @@ export function PipelineOverview({
                   >
                     {lang === 'zh' ? '打开所选' : 'Open selected'}
                   </button>
-                ) : (
-                  <span className="text-[10px] text-[var(--color-text-muted)]">
-                    {lang === 'zh' ? '请选择一个候选 item' : 'Select a candidate item'}
-                  </span>
                 )}
                 <div className="flex-1" />
                 <button
