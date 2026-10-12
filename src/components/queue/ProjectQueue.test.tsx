@@ -44,6 +44,106 @@ describe('ProjectQueue mode switch', () => {
     expect(screen.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument()
   })
 
+  function seedBatchChats() {
+    useProjectStore.setState({ appMode: 'normal' })
+    useChatStore.setState({ workspaceKey: 'batch', activeChatId: 'a', chats: [
+      { id: 'b', title: 'Batch B', createdAt: 1, updatedAt: 2 },
+      { id: 'c', title: 'Batch C', createdAt: 1, updatedAt: 1 },
+      { id: 'a', title: 'Batch A', createdAt: 1, updatedAt: 3 },
+    ] })
+    useOrganizationStore.setState({ loaded: true, folders: [{ id: 'dest', name: 'Destination', created_at: 'x', updated_at: 'x' }],
+      assignments: { chat: {}, project: {} } })
+  }
+
+  it('Shift selects the visible range, supports Ctrl toggling, and confirms bulk deletion', async () => {
+    seedBatchChats()
+    const remove = vi.spyOn(useChatStore.getState(), 'deleteChats').mockResolvedValue({ deleted: ['a', 'c'], failed: [] })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: 'Batch A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Batch C' }), { shiftKey: true })
+    expect(screen.getByText('3 selected')).toBeInTheDocument()
+    expect(useChatStore.getState().activeChatId).toBe('a')
+    fireEvent.click(screen.getByRole('button', { name: 'Batch B' }), { ctrlKey: true })
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected conversations' }))
+    expect(remove).not.toHaveBeenCalled()
+    confirm.mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete selected conversations' }))
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(['a', 'c']))
+  })
+
+  it('moves selected chats sequentially and retains only failed selections for retry', async () => {
+    seedBatchChats()
+    const move = vi.spyOn(useOrganizationStore.getState(), 'moveItem').mockImplementation(async (_kind, id) => {
+      if (id === 'b') throw new Error('offline')
+    })
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: 'Batch C' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Batch A' }), { shiftKey: true })
+    fireEvent.change(screen.getByRole('combobox', { name: 'Move selected conversations' }), { target: { value: 'dest' } })
+    await waitFor(() => expect(screen.getByText('1 selected')).toBeInTheDocument())
+    expect(move.mock.calls.map((call) => call[1])).toEqual(['a', 'b', 'c'])
+    expect(screen.getByRole('button', { name: 'Batch B' })).toHaveAttribute('aria-pressed', 'true')
+    expect(useUiStore.getState().systemMessages.at(-1)?.text).toContain('1 failed')
+  })
+
+  it('clears a range when searching so hidden chats cannot be batch-deleted', () => {
+    seedBatchChats()
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: 'Batch A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Batch C' }), { shiftKey: true })
+    fireEvent.change(screen.getByPlaceholderText('Search folders and titles...'), { target: { value: 'Batch B' } })
+    expect(screen.queryByText('3 selected')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Batch B' }), { shiftKey: true })
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+  })
+
+  it('excludes collapsed folders from Shift ranges', () => {
+    seedBatchChats()
+    useOrganizationStore.setState({ assignments: { chat: { b: 'dest' }, project: {} } })
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: /Destination/ }))
+    expect(screen.queryByRole('button', { name: 'Batch B' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Batch A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Batch C' }), { shiftKey: true })
+    expect(screen.getByText('2 selected')).toBeInTheDocument()
+  })
+
+  it('disables duplicate batch submissions while awaiting server confirmation', async () => {
+    seedBatchChats()
+    let finish!: (result: { deleted: string[]; failed: string[] }) => void
+    const remove = vi.spyOn(useChatStore.getState(), 'deleteChats').mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: 'Batch A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Batch C' }), { shiftKey: true })
+    const button = screen.getByRole('button', { name: 'Delete selected conversations' })
+    fireEvent.click(button)
+    expect(button).toBeDisabled()
+    fireEvent.click(button)
+    expect(remove).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('button', { name: 'Batch B' })).toBeDisabled()
+    finish({ deleted: ['a', 'b', 'c'], failed: [] })
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
+  })
+
+  it('drags the whole selected range into a folder', async () => {
+    seedBatchChats()
+    const move = vi.spyOn(useOrganizationStore.getState(), 'moveItem').mockResolvedValue(undefined)
+    const data = new Map<string, string>()
+    const dataTransfer = { effectAllowed: '', dropEffect: '',
+      setData: (type: string, value: string) => data.set(type, value),
+      getData: (type: string) => data.get(type) ?? '' }
+    render(<ProjectQueue />)
+    fireEvent.click(screen.getByRole('button', { name: 'Batch A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Batch C' }), { shiftKey: true })
+    fireEvent.dragStart(screen.getByText('Batch B').closest('[draggable="true"]')!, { dataTransfer })
+    fireEvent.drop(screen.getByRole('button', { name: /Destination/ }).closest('div')!, { dataTransfer })
+    await waitFor(() => expect(move).toHaveBeenCalledTimes(3))
+    expect(move.mock.calls).toEqual([['chat', 'a', 'dest'], ['chat', 'b', 'dest'], ['chat', 'c', 'dest']])
+  })
+
   it('groups chats in shared folders and filters by title', () => {
     useProjectStore.setState({ appMode: 'normal' })
     useChatStore.setState({

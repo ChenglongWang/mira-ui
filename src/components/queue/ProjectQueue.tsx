@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useProjectStore } from '@/stores/projectStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUiStore } from '@/stores/uiStore'
@@ -46,7 +46,7 @@ export function ProjectQueue() {
       )
     }
   }
-  const { chats, activeChatId, workspaceKey, createChat, selectChat, renameChat, deleteChat } = useChatStore()
+  const { chats, activeChatId, workspaceKey, createChat, selectChat, renameChat, deleteChats } = useChatStore()
   const { folders, assignments, loaded: organizationLoaded, createFolder, renameFolder, deleteFolder, moveItem } = useOrganizationStore()
   const isChatActive = appMode === 'normal'
 
@@ -58,6 +58,17 @@ export function ProjectQueue() {
   const [folderDraft, setFolderDraft] = useState('')
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
+  const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const bulkOperation = useRef(false)
+  const selectionAnchor = useRef<string | null>(null)
+  useEffect(() => {
+    setSelectedChats(new Set())
+    selectionAnchor.current = null
+  }, [workspaceKey, tab, search, collapsedFolders])
+  useEffect(() => {
+    setSelectedChats((current) => new Set([...current].filter((id) => chats.some((chat) => chat.id === id))))
+  }, [chats])
   useEffect(() => {
     setTab(isChatActive ? 'chats' : 'projects')
   }, [isChatActive])
@@ -88,6 +99,7 @@ export function ProjectQueue() {
   }
 
   const handleChatsTab = () => {
+    if (bulkOperation.current) return
     setTab('chats')
     const availableChatId = (
       activeChatId && chats.some((chat) => chat.id === activeChatId)
@@ -102,6 +114,7 @@ export function ProjectQueue() {
   }
 
   const handleProjectsTab = () => {
+    if (bulkOperation.current) return
     setTab('projects')
     const availableProjectId = (
       selectedTaskId && tasks.some((task) => task.id === selectedTaskId)
@@ -153,6 +166,74 @@ export function ProjectQueue() {
     })
     .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))
 
+  // Shift ranges follow rendered order, never hidden/collapsed rows.
+  const visibleChatIds = [
+    ...chatGroups.flatMap(({ folder, items }) => normalizedSearch || !collapsedFolders.has(folder.id)
+      ? items.map((chat) => chat.id) : []),
+    ...(normalizedSearch || !collapsedFolders.has(UNCATEGORIZED_ID) ? uncategorizedChats.map((chat) => chat.id) : []),
+  ]
+  const handleSelectChat = (id: string, event: React.MouseEvent<HTMLButtonElement>) => {
+    if (bulkOperation.current) return
+    if (event.shiftKey) {
+      const anchor = selectionAnchor.current ?? activeChatId ?? id
+      const from = visibleChatIds.indexOf(anchor)
+      const to = visibleChatIds.indexOf(id)
+      const range = from < 0 || to < 0 ? [id] : visibleChatIds.slice(Math.min(from, to), Math.max(from, to) + 1)
+      setSelectedChats((current) => new Set(event.metaKey || event.ctrlKey ? [...current, ...range] : range))
+      selectionAnchor.current = from < 0 ? id : anchor
+    } else if (event.metaKey || event.ctrlKey) {
+      setSelectedChats((current) => {
+        const next = new Set(current)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        return next
+      })
+      selectionAnchor.current = id
+    } else {
+      setSelectedChats(new Set([id]))
+      selectionAnchor.current = id
+      selectChat(id)
+    }
+  }
+
+  const batchTargets = (id?: string) => id && !selectedChats.has(id) ? [id] : [...selectedChats]
+  const runChatBatch = async (ids: string[], action: 'delete' | 'move', folderId: string | null = null) => {
+    if (bulkOperation.current || ids.length === 0 || (action === 'move' && !organizationLoaded)) return
+    if (action === 'delete' && !window.confirm(lang === 'zh'
+      ? `从会话列表删除所选 ${ids.length} 个会话？这不会删除磁盘上的历史日志。`
+      : `Remove ${ids.length} selected conversations from the list? History files on disk will not be deleted.`)) return
+    bulkOperation.current = true
+    setBulkBusy(true)
+    const scope = workspaceKey
+    let failed: string[] = []
+    try {
+      if (action === 'delete') {
+        failed = (await deleteChats(ids)).failed
+      } else {
+        // Sequential moves preserve the store's per-item optimistic rollback.
+        for (const id of ids) {
+          if (useChatStore.getState().workspaceKey !== scope) { failed.push(id); continue }
+          try { await moveItem('chat', id, folderId) } catch { failed.push(id) }
+        }
+      }
+      if (useChatStore.getState().workspaceKey === scope) setSelectedChats(new Set(failed))
+      pushSystemMessage(lang === 'zh'
+        ? `${action === 'delete' ? '删除' : '移动'}成功 ${ids.length - failed.length} 个${failed.length ? `，失败 ${failed.length} 个，请重试` : ''}。`
+        : `${ids.length - failed.length} conversations ${action === 'delete' ? 'removed' : 'moved'}${failed.length ? `; ${failed.length} failed, please retry` : ''}.`,
+      { severity: failed.length ? 'error' : 'success', ttlMs: 6000 })
+    } catch (error) {
+      reportOrganizationError(error)
+    } finally {
+      bulkOperation.current = false
+      setBulkBusy(false)
+    }
+  }
+  const chatProps = (id: string) => ({
+    bulkSelected: selectedChats.has(id), disabled: bulkBusy, onSelect: handleSelectChat,
+    onDelete: () => { void runChatBatch(batchTargets(id), 'delete') },
+    onMove: (_id: string, folderId: string | null) => { void runChatBatch(batchTargets(id), 'move', folderId) },
+  })
+
   const reportOrganizationError = (error: unknown) => {
     const reason = error instanceof Error ? error.message : String(error)
     pushSystemMessage(t('folderSaveFailed', lang, { reason }), { severity: 'error', ttlMs: 6000 })
@@ -182,9 +263,13 @@ export function ProjectQueue() {
   const handleDrop = (event: React.DragEvent, folderId: string | null) => {
     event.preventDefault()
     try {
-      const payload = JSON.parse(event.dataTransfer.getData(ORGANIZATION_DRAG_TYPE)) as { kind?: unknown; itemId?: unknown }
+      if (bulkOperation.current) return
+      const payload = JSON.parse(event.dataTransfer.getData(ORGANIZATION_DRAG_TYPE)) as { kind?: unknown; itemId?: unknown; itemIds?: unknown }
       if ((payload.kind === 'chat' || payload.kind === 'project') && typeof payload.itemId === 'string') {
-        void handleMove(payload.kind, payload.itemId, folderId)
+        if (payload.kind === 'chat') {
+          const ids = Array.isArray(payload.itemIds) ? payload.itemIds : [payload.itemId]
+          void runChatBatch([...new Set(ids.filter((id): id is string => typeof id === 'string' && chats.some((chat) => chat.id === id)))], 'move', folderId)
+        } else void handleMove(payload.kind, payload.itemId, folderId)
       }
     } catch {
       // Ignore drags that did not originate from an organization item.
@@ -192,10 +277,12 @@ export function ProjectQueue() {
   }
 
   const dragProps = (kind: OrganizationKind, itemId: string) => ({
-    draggable: true,
+    draggable: !bulkBusy,
     onDragStart: (event: React.DragEvent<HTMLDivElement>) => {
       event.dataTransfer.effectAllowed = 'move'
-      event.dataTransfer.setData(ORGANIZATION_DRAG_TYPE, JSON.stringify({ kind, itemId }))
+      event.dataTransfer.setData(ORGANIZATION_DRAG_TYPE, JSON.stringify({ kind, itemId,
+        ...(kind === 'chat' ? { itemIds: batchTargets(itemId) } : {}),
+      }))
     },
   })
 
@@ -215,6 +302,7 @@ export function ProjectQueue() {
             if (showChats) createChat()
             else setCreateProjectOpen(true)
           }}
+          disabled={bulkBusy}
           className="w-7 shrink-0 flex items-center justify-center border-l border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
           aria-label={showChats ? t('newChatAria', lang) : t('newProjectAria', lang)}
           title={showChats ? t('newChat', lang) : t('newProjectAria', lang)}
@@ -226,7 +314,7 @@ export function ProjectQueue() {
         </button>
         <button
           onClick={() => setCreatingFolder(true)}
-          disabled={!organizationLoaded}
+          disabled={!organizationLoaded || bulkBusy}
           className="flex w-7 shrink-0 items-center justify-center border-l border-[var(--color-border)] text-[var(--color-text-muted)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)] disabled:opacity-40"
           aria-label={t('newFolder', lang)}
           title={t('newFolder', lang)}
@@ -243,11 +331,36 @@ export function ProjectQueue() {
       <div className="border-b border-[var(--color-border)] p-2">
         <input
           value={search}
+          disabled={bulkBusy}
           onChange={(event) => setSearch(event.target.value)}
           placeholder={t('searchConversationsProjects', lang)}
           className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2.5 py-1.5 text-xs outline-none placeholder:text-[var(--color-text-muted)] focus:border-[var(--color-accent)]"
         />
       </div>
+
+      {showChats && (
+        <div className="border-b border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-muted)]">
+          <p>{lang === 'zh' ? 'Shift + 点击连选 · Ctrl / ⌘ + 点击多选' : 'Shift-click for range · Ctrl / ⌘-click to toggle'}</p>
+          {selectedChats.size > 0 && <div className="mt-2 flex flex-wrap items-center gap-2" aria-label={lang === 'zh' ? '会话批量操作' : 'Conversation bulk actions'}>
+            <span>{lang === 'zh' ? `已选 ${selectedChats.size} 个` : `${selectedChats.size} selected`}</span>
+            <button type="button" disabled={bulkBusy} onClick={() => { setSelectedChats(new Set()); selectionAnchor.current = null }}>
+              {lang === 'zh' ? '取消选择' : 'Clear selection'}
+            </button>
+            <select aria-label={lang === 'zh' ? '移动所选会话' : 'Move selected conversations'}
+              value="" disabled={bulkBusy || !organizationLoaded}
+              className="max-w-full rounded border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2 py-1"
+              onChange={(event) => { if (event.target.value) void runChatBatch([...selectedChats], 'move', event.target.value === UNCATEGORIZED_ID ? null : event.target.value) }}>
+              <option value="">{lang === 'zh' ? '移动到…' : 'Move to…'}</option>
+              <option value={UNCATEGORIZED_ID}>{t('uncategorized', lang)}</option>
+              {sortedFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+            </select>
+            <button type="button" disabled={bulkBusy} className="text-red-400 disabled:opacity-50" onClick={() => { void runChatBatch([...selectedChats], 'delete') }}>
+              {lang === 'zh' ? '删除所选会话' : 'Delete selected conversations'}
+            </button>
+            {bulkBusy && <span role="status">{lang === 'zh' ? '处理中…' : 'Working…'}</span>}
+          </div>}
+        </div>
+      )}
 
       {/* Active list */}
       <div className="flex-1 space-y-1 overflow-y-auto p-2">
@@ -281,7 +394,7 @@ export function ProjectQueue() {
                 <div key={folder.id}>
                   <FolderRow
                     name={folder.name}
-                    mutable={organizationLoaded}
+                    mutable={organizationLoaded && !bulkBusy}
                     count={chats.filter((chat) => assignments.chat[chat.id] === folder.id).length}
                     expanded={normalizedSearch.length > 0 || !collapsedFolders.has(folder.id)}
                     onToggle={() => toggleFolder(folder.id)}
@@ -295,7 +408,7 @@ export function ProjectQueue() {
                   />
                   {(normalizedSearch.length > 0 || !collapsedFolders.has(folder.id)) && items.map((chat) => (
                     <div key={chat.id} className="ml-3" {...dragProps('chat', chat.id)}>
-                      <ChatItem chat={chat} isSelected={isChatActive && chat.id === activeChatId} onSelect={selectChat} onRename={renameChat} onDelete={deleteChat} folders={sortedFolders} currentFolderId={folder.id} onMove={(id, folderId) => { void handleMove('chat', id, folderId) }} />
+                      <ChatItem chat={chat} isSelected={isChatActive && chat.id === activeChatId} onRename={renameChat} folders={sortedFolders} currentFolderId={folder.id} {...chatProps(chat.id)} />
                     </div>
                   ))}
                 </div>
@@ -305,7 +418,7 @@ export function ProjectQueue() {
                   <FolderRow name={t('uncategorized', lang)} count={uncategorizedChats.length} virtual expanded={normalizedSearch.length > 0 || !collapsedFolders.has(UNCATEGORIZED_ID)} onToggle={() => toggleFolder(UNCATEGORIZED_ID)} onDropItem={(event) => handleDrop(event, null)} />
                   {(normalizedSearch.length > 0 || !collapsedFolders.has(UNCATEGORIZED_ID)) && uncategorizedChats.map((chat) => (
                     <div key={chat.id} className="ml-3" {...dragProps('chat', chat.id)}>
-                      <ChatItem chat={chat} isSelected={isChatActive && chat.id === activeChatId} onSelect={selectChat} onRename={renameChat} onDelete={deleteChat} folders={sortedFolders} currentFolderId={null} onMove={(id, folderId) => { void handleMove('chat', id, folderId) }} />
+                      <ChatItem chat={chat} isSelected={isChatActive && chat.id === activeChatId} onRename={renameChat} folders={sortedFolders} currentFolderId={null} {...chatProps(chat.id)} />
                     </div>
                   ))}
                 </div>
