@@ -77,6 +77,7 @@ jobs:
 
           if (process.env.GITHUB_ENV) {
             fs.appendFileSync(process.env.GITHUB_ENV, `DESKTOP_VERSION=${version}\n`)
+            fs.appendFileSync(process.env.GITHUB_ENV, `RELEASE_CHANNEL=${match[2] ? 'rc' : 'latest'}\n`)
           }
 
           console.log(`Set ${pkgPath} version to ${version} from tag ${tag}`)
@@ -87,22 +88,23 @@ jobs:
 
       - name: Build macOS standalone artifacts
         if: matrix.os == 'macos-latest'
-        run: npm run dist:mac
+        run: npm run dist:mac -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
 
       - name: Rename macOS standalone update manifests
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          if [ -f release/latest-mac.yml ]; then
-            mv release/latest-mac.yml release/latest-mac-standalone.yml
-          fi
+          for manifest in release/*-mac.yml; do
+            [ -f "$manifest" ] || continue
+            mv "$manifest" "${manifest%.yml}-standalone.yml"
+          done
           if [ -f release/app-update.yml ]; then
             mv release/app-update.yml release/app-update-standalone.yml
           fi
 
       - name: Build Windows standalone artifacts
         if: matrix.os == 'windows-latest'
-        run: npm run dist:win
+        run: npm run dist:win -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
 
       - name: Package Windows standalone setup as zip
         if: matrix.os == 'windows-latest'
@@ -115,6 +117,10 @@ jobs:
           }
           $setupZip = [System.IO.Path]::ChangeExtension($setupExe.FullName, ".zip")
           Compress-Archive -Path $setupExe.FullName -DestinationPath $setupZip -Force
+          foreach ($channel in @('latest', 'rc', 'beta', 'alpha')) {
+            $manifest = "release/$channel.yml"
+            if (Test-Path $manifest) { Move-Item $manifest "release/$channel-win-standalone.yml" }
+          }
 
       - name: Upload macOS standalone release assets
         if: matrix.os == 'macos-latest'
@@ -126,7 +132,7 @@ jobs:
             release/MIRA-standalone-*-mac-*.dmg.blockmap
             release/MIRA-standalone-*-mac-*.zip
             release/MIRA-standalone-*-mac-*.zip.blockmap
-            release/latest-mac-standalone.yml
+            release/*-mac-standalone.yml
             release/app-update-standalone.yml
 
       - name: Upload Windows standalone release assets
@@ -136,6 +142,9 @@ jobs:
           name: miraui-release-standalone-windows
           path: |
             release/MIRA-standalone-*-win-*-setup.zip
+            release/MIRA-standalone-*-win-*-setup.exe
+            release/MIRA-standalone-*-win-*-setup.exe.blockmap
+            release/*-win-standalone.yml
 
   build-bundle:
     needs: verify-compatibility
@@ -183,13 +192,21 @@ jobs:
 
           if (process.env.GITHUB_ENV) {
             fs.appendFileSync(process.env.GITHUB_ENV, `DESKTOP_VERSION=${version}\n`)
+            fs.appendFileSync(process.env.GITHUB_ENV, `RELEASE_CHANNEL=${match[2] ? 'rc' : 'latest'}\n`)
           }
 
           console.log(`Set ${pkgPath} version to ${version} from tag ${tag}`)
           EOF
 
-      - name: Show resolved bundle version
-        run: echo "Bundle version = ${{ env.DESKTOP_VERSION }} using latest published mira engine release"
+      - name: Pin bundled engine to compatibility release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ENGINE_TAG="v$(node -p "require('./compatibility.json').agent")"
+          gh release view "$ENGINE_TAG" --repo "$MIRA_ENGINE_REPO" --json tagName,isDraft,assets
+          echo "MIRA_ENGINE_RELEASE_TAG=$ENGINE_TAG" >> "$GITHUB_ENV"
+          echo "Bundle version = $DESKTOP_VERSION using pinned engine $ENGINE_TAG"
 
       - name: Build macOS bundle artifacts
         if: matrix.os == 'macos-latest'
@@ -200,15 +217,16 @@ jobs:
           MIRA_FEISHU_GROUP_INVITE_URL: ${{ secrets.MIRA_FEISHU_GROUP_INVITE_URL }}
           MIRA_FEISHU_MENTION_OPEN_ID: ${{ secrets.MIRA_FEISHU_MENTION_OPEN_ID }}
           MIRA_FEISHU_MENTION_NAME: ${{ vars.MIRA_FEISHU_MENTION_NAME || 'MIRAI' }}
-        run: npm run dist:bundle:mac
+        run: npm run dist:bundle:mac -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
 
       - name: Rename macOS bundle update manifests
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          if [ -f release-bundle/latest-mac.yml ]; then
-            mv release-bundle/latest-mac.yml release-bundle/latest-mac-bundle.yml
-          fi
+          for manifest in release-bundle/*-mac.yml; do
+            [ -f "$manifest" ] || continue
+            mv "$manifest" "${manifest%.yml}-bundle.yml"
+          done
           if [ -f release-bundle/app-update.yml ]; then
             mv release-bundle/app-update.yml release-bundle/app-update-bundle.yml
           fi
@@ -222,7 +240,7 @@ jobs:
           MIRA_FEISHU_GROUP_INVITE_URL: ${{ secrets.MIRA_FEISHU_GROUP_INVITE_URL }}
           MIRA_FEISHU_MENTION_OPEN_ID: ${{ secrets.MIRA_FEISHU_MENTION_OPEN_ID }}
           MIRA_FEISHU_MENTION_NAME: ${{ vars.MIRA_FEISHU_MENTION_NAME || 'MIRAI' }}
-        run: npm run dist:bundle:win
+        run: npm run dist:bundle:win -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
 
       - name: Package Windows bundle setup as zip
         if: matrix.os == 'windows-latest'
@@ -235,6 +253,10 @@ jobs:
           }
           $setupZip = [System.IO.Path]::ChangeExtension($setupExe.FullName, ".zip")
           Compress-Archive -Path $setupExe.FullName -DestinationPath $setupZip -Force
+          foreach ($channel in @('latest', 'rc', 'beta', 'alpha')) {
+            $manifest = "release-bundle/$channel.yml"
+            if (Test-Path $manifest) { Move-Item $manifest "release-bundle/$channel-win-bundle.yml" }
+          }
 
       - name: Upload macOS bundle release assets
         if: matrix.os == 'macos-latest'
@@ -246,7 +268,7 @@ jobs:
             release-bundle/MIRA-bundle-*-mac-*.dmg.blockmap
             release-bundle/MIRA-bundle-*-mac-*.zip
             release-bundle/MIRA-bundle-*-mac-*.zip.blockmap
-            release-bundle/latest-mac-bundle.yml
+            release-bundle/*-mac-bundle.yml
             release-bundle/app-update-bundle.yml
 
       - name: Upload Windows bundle release assets
@@ -256,6 +278,9 @@ jobs:
           name: miraui-release-bundle-windows
           path: |
             release-bundle/MIRA-bundle-*-win-*-setup.zip
+            release-bundle/MIRA-bundle-*-win-*-setup.exe
+            release-bundle/MIRA-bundle-*-win-*-setup.exe.blockmap
+            release-bundle/*-win-bundle.yml
 
   publish-release:
     needs:
@@ -278,11 +303,16 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: MIRA ${{ env.RELEASE_TAG }}
+          prerelease: ${{ contains(env.RELEASE_TAG, 'rc') }}
+          make_latest: ${{ contains(env.RELEASE_TAG, 'rc') && 'false' || 'true' }}
           generate_release_notes: true
           files: |
             release-assets/*.dmg
             release-assets/*.dmg.blockmap
             release-assets/*.zip
             release-assets/*.zip.blockmap
-            release-assets/latest-mac-*.yml
+            release-assets/*-mac-*.yml
+            release-assets/*-win-*.yml
+            release-assets/*.exe
+            release-assets/*.exe.blockmap
             release-assets/app-update-*.yml
