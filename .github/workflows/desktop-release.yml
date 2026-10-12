@@ -108,9 +108,9 @@ jobs:
 
       - name: Build Windows standalone artifacts
         if: matrix.os == 'windows-latest'
-        # PowerShell splits unquoted -c.publish.* into -c and .publish.*.
-        shell: bash
-        run: npm run dist:win -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
+        # Quote dotted options; keep native Windows tar on PATH for bundles.
+        shell: pwsh
+        run: npm run dist:win -- '-c.publish.provider=github' '-c.publish.owner=MIRA-Intelligence' '-c.publish.repo=mira-ui' '-c.publish.channel=${{ env.RELEASE_CHANNEL }}'
 
       - name: Package Windows standalone setup as zip
         if: matrix.os == 'windows-latest'
@@ -238,7 +238,7 @@ jobs:
 
       - name: Build Windows bundle artifacts
         if: matrix.os == 'windows-latest'
-        shell: bash
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           MIRA_FEISHU_WEBHOOK_URL: ${{ secrets.MIRA_FEISHU_WEBHOOK_URL }}
@@ -246,7 +246,7 @@ jobs:
           MIRA_FEISHU_GROUP_INVITE_URL: ${{ secrets.MIRA_FEISHU_GROUP_INVITE_URL }}
           MIRA_FEISHU_MENTION_OPEN_ID: ${{ secrets.MIRA_FEISHU_MENTION_OPEN_ID }}
           MIRA_FEISHU_MENTION_NAME: ${{ vars.MIRA_FEISHU_MENTION_NAME || 'MIRAI' }}
-        run: npm run dist:bundle:win -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
+        run: npm run dist:bundle:win -- '-c.publish.provider=github' '-c.publish.owner=MIRA-Intelligence' '-c.publish.repo=mira-ui' '-c.publish.channel=${{ env.RELEASE_CHANNEL }}'
 
       - name: Package Windows bundle setup as zip
         if: matrix.os == 'windows-latest'
