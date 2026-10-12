@@ -17,6 +17,7 @@ import { buildWorkflowCandidates, resolveWorkflowCandidate } from '@/lib/workflo
 import { WorkflowCandidateList } from './WorkflowCandidateList'
 import { WorkflowInteractionPanel } from './WorkflowInteractionPanel'
 import { ExperimentExecutionMode } from './ExperimentExecutionMode'
+import { ExperimentInputPaths } from './ExperimentInputPaths'
 
 const MODULE_META: Record<WorkflowModuleType, {
   icon: string
@@ -123,6 +124,8 @@ export function ModuleStageControls() {
   const [intent, setIntent] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
   const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
+  const [inputPaths, setInputPaths] = useState<string[]>([''])
+  const [inputPathsValid, setInputPathsValid] = useState(true)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [candidateListCollapsed, setCandidateListCollapsed] = useState(false)
@@ -146,6 +149,8 @@ export function ModuleStageControls() {
     const label = lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en.toLowerCase()
     setTargetModule(moduleType)
     setExperimentMode('auto')
+    setInputPaths([''])
+    setInputPathsValid(true)
     setIntent(
       lang === 'zh'
         ? `基于上游候选“${selectedCandidate?.label ?? selectedRun.label}”继续${label}。`
@@ -164,6 +169,7 @@ export function ModuleStageControls() {
 
   const startDownstreamRun = async () => {
     if (!targetModule) return
+    if (targetModule === 'experiment' && !inputPathsValid) return
     const normalizedIntent = intent.trim()
     if (!normalizedIntent) {
       setError(lang === 'zh' ? '请填写本次运行目标。' : 'Describe the goal for this run.')
@@ -185,7 +191,11 @@ export function ModuleStageControls() {
     const moduleData: Record<string, unknown> = {
       confirmation_policy: { mode: 'required' },
     }
-    if (targetModule === 'experiment') moduleData.experiment_execution_mode = experimentMode
+    if (targetModule === 'experiment') {
+      moduleData.experiment_execution_mode = experimentMode
+      const paths = [...new Set(inputPaths.map((p) => p.trim()).filter(Boolean))]
+      if (paths.length) moduleData.external_read_paths = paths
+    }
     if (selectedCandidate) {
       moduleData.upstream_selection = {
         module_type: selectedRun.module_type,
@@ -407,7 +417,10 @@ export function ModuleStageControls() {
             />
 
             {targetModule === 'experiment' && (
-              <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={pending} />
+              <>
+                <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={pending} />
+                <ExperimentInputPaths paths={inputPaths} onChange={setInputPaths} onValidChange={setInputPathsValid} disabled={pending} />
+              </>
             )}
 
             {targetModule === 'delivery' && (
@@ -466,7 +479,7 @@ export function ModuleStageControls() {
               </button>
               <button
                 type="button"
-                disabled={pending || !intent.trim() || (targetModule === 'delivery' && !deliveryFormat)}
+                disabled={pending || !intent.trim() || (targetModule === 'experiment' && !inputPathsValid) || (targetModule === 'delivery' && !deliveryFormat)}
                 onClick={() => void startDownstreamRun()}
                 className="rounded-lg bg-[var(--color-accent)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
               >

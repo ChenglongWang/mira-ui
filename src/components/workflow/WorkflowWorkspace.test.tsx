@@ -7,6 +7,7 @@ vi.mock('@/services/api', () => ({
   createWorkflowRun: vi.fn(),
   fetchWorkflowSnapshot: vi.fn(),
   importWorkflowArtifact: vi.fn(),
+  validateDataPath: vi.fn(),
 }))
 
 vi.mock('@/services/websocket', () => ({
@@ -16,7 +17,7 @@ vi.mock('@/services/websocket', () => ({
   },
 }))
 
-import { createWorkflowRun, fetchWorkflowSnapshot } from '@/services/api'
+import { createWorkflowRun, fetchWorkflowSnapshot, validateDataPath } from '@/services/api'
 import { wsClient } from '@/services/websocket'
 import { useAgentStore } from '@/stores/agentStore'
 import { useProjectStore } from '@/stores/projectStore'
@@ -248,6 +249,23 @@ describe('WorkflowWorkspace module entry', () => {
     const researchStage = screen.getByRole('heading', { name: '1. Research' }).closest('.relative')
     expect(researchStage).toHaveClass('xl:min-h-0')
     expect(researchStage).not.toHaveClass('h-full')
+  })
+
+  it('adds multiple external inputs and warns only for external paths in strict mode', async () => {
+    vi.mocked(validateDataPath).mockImplementation(async (path) => ({ ok: true,
+      outside_workspace: path.startsWith('/external'), restrict_to_workspace: true }))
+    render(<WorkflowWorkspace />)
+    fireEvent.click(screen.getByRole('button', { name: /Experiment.*Start module/i }))
+    fireEvent.change(screen.getByLabelText('Additional input path 1'), { target: { value: '/external/data' } })
+    fireEvent.click(screen.getByRole('button', { name: '+ Add path' }))
+    fireEvent.change(screen.getByLabelText('Additional input path 2'), { target: { value: '/workspace/code' } })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start and open module' })).toBeEnabled())
+    expect(screen.getAllByRole('alert')).toHaveLength(1)
+    expect(screen.getByRole('alert')).toHaveTextContent('Back up important data')
+    fireEvent.click(screen.getByRole('button', { name: 'Start and open module' }))
+    await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
+      moduleData: expect.objectContaining({ external_read_paths: ['/external/data', '/workspace/code'] }),
+    })))
   })
 
   it.each(['auto', 'manual'] as const)('persists %s mode with experiment limits and stopping conditions', async (mode) => {

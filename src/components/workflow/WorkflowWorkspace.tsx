@@ -30,6 +30,7 @@ import {
 } from '@/lib/workflowCandidates'
 import { PipelineOverview } from './PipelineOverview'
 import { ExperimentExecutionMode } from './ExperimentExecutionMode'
+import { ExperimentInputPaths } from './ExperimentInputPaths'
 import { WorkflowDebugPanel } from './WorkflowDebugPanel'
 
 const MODULES: Array<{
@@ -290,6 +291,8 @@ export function WorkflowWorkspace() {
   const [maxTokens, setMaxTokens] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
   const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
+  const [inputPaths, setInputPaths] = useState<string[]>([''])
+  const [inputPathsValid, setInputPathsValid] = useState(true)
   const [startError, setStartError] = useState<string | null>(null)
   const selectedRun = useMemo(
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId) ?? null,
@@ -319,6 +322,8 @@ export function WorkflowWorkspace() {
   ) => {
     setStartingModule(moduleType)
     setExperimentMode('auto')
+    setInputPaths([''])
+    setInputPathsValid(true)
     setContinuationSource(sourceRun
       ? {
           parentRunId: sourceCandidate?.runId ?? sourceRun.run_id,
@@ -433,7 +438,10 @@ export function WorkflowWorkspace() {
       if (references.trim()) moduleData.references = references.trim()
     }
     if (startingModule === 'experiment') {
+      if (!inputPathsValid) return
       moduleData.experiment_execution_mode = experimentMode
+      const paths = [...new Set(inputPaths.map((p) => p.trim()).filter(Boolean))]
+      if (paths.length) moduleData.external_read_paths = paths
       const normalizedGoals: AutomationGoal[] = []
       for (let index = 0; index < goals.length; index += 1) {
         const metric = goals[index].metric.trim()
@@ -725,6 +733,7 @@ export function WorkflowWorkspace() {
               {startingModule === 'experiment' && (
                 <div className="mt-4 space-y-4">
                   <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={creating !== null} />
+                  <ExperimentInputPaths paths={inputPaths} onChange={setInputPaths} onValidChange={setInputPathsValid} disabled={creating !== null} />
                   <div>
                     <div className="flex items-center justify-between gap-3">
                       <label className="text-xs font-medium text-[var(--color-text-secondary)]">
@@ -902,6 +911,7 @@ export function WorkflowWorkspace() {
                   disabled={
                     creating !== null
                     || runIntent.trim().length === 0
+                    || (startingModule === 'experiment' && !inputPathsValid)
                     || (startingModule === 'delivery' && !deliveryFormat)
                   }
                   onClick={() => void startModuleRun()}

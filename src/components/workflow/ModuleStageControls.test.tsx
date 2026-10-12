@@ -6,6 +6,7 @@ vi.mock('@/services/api', () => ({
   commandWorkflowRun: vi.fn(),
   createWorkflowRun: vi.fn(),
   fetchWorkflowSnapshot: vi.fn(),
+  validateDataPath: vi.fn(),
 }))
 
 vi.mock('@/services/websocket', () => ({
@@ -19,6 +20,7 @@ import {
   commandWorkflowRun,
   createWorkflowRun,
   fetchWorkflowSnapshot,
+  validateDataPath,
 } from '@/services/api'
 import { wsClient } from '@/services/websocket'
 import { useAgentStore } from '@/stores/agentStore'
@@ -133,6 +135,24 @@ describe('ModuleStageControls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create branch and start' }))
     await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
       moduleType: 'experiment', moduleData: expect.objectContaining({ experiment_execution_mode: mode }),
+    })))
+  })
+
+  it('passes user-selected external inputs to the downstream experiment', async () => {
+    const run = makeRun({ outputs: ['artifact-1'] })
+    const snapshot = makeSnapshot(run)
+    useWorkflowStore.setState({ snapshots: { 'PRJ-1': snapshot }, selectedRunByProject: { 'PRJ-1': run.run_id } })
+    vi.mocked(fetchWorkflowSnapshot).mockResolvedValue(snapshot)
+    vi.mocked(createWorkflowRun).mockResolvedValue({ run_id: 'experiment-run', project_sequence: 3 })
+    vi.mocked(validateDataPath).mockResolvedValue({ ok: true, outside_workspace: true, restrict_to_workspace: true })
+    render(<ModuleStageControls />)
+    fireEvent.click(screen.getByRole('button', { name: /Continue to Experiment/ }))
+    fireEvent.change(screen.getByLabelText('Additional input path 1'), { target: { value: '/external/data' } })
+    expect(screen.getByRole('button', { name: 'Create branch and start' })).toBeDisabled()
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create branch and start' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Create branch and start' }))
+    await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
+      moduleData: expect.objectContaining({ external_read_paths: ['/external/data'] }),
     })))
   })
 

@@ -492,6 +492,8 @@ export interface DataPathValidationResult {
   error?: string
   kind?: 'file' | 'directory'
   resolved_path?: string
+  outside_workspace?: boolean
+  restrict_to_workspace?: boolean
 }
 
 export async function uploadProjectFiles(
@@ -531,11 +533,11 @@ export async function uploadProjectFiles(
   }
 }
 
-export async function validateDataPath(path: string): Promise<DataPathValidationResult> {
+export async function validateDataPath(path: string, purpose?: 'experiment_input'): Promise<DataPathValidationResult> {
   const resp = await fetch(`${getApiUrl()}/data-path/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, ...(purpose ? { purpose } : {}) }),
   })
   if (!resp.ok) {
     let msg = ''
@@ -553,6 +555,8 @@ export async function validateDataPath(path: string): Promise<DataPathValidation
     error: typeof data?.error === 'string' ? data.error : undefined,
     kind: data?.kind === 'file' || data?.kind === 'directory' ? data.kind : undefined,
     resolved_path: typeof data?.resolved_path === 'string' ? data.resolved_path : undefined,
+    ...(typeof data?.outside_workspace === 'boolean' ? { outside_workspace: data.outside_workspace } : {}),
+    ...(typeof data?.restrict_to_workspace === 'boolean' ? { restrict_to_workspace: data.restrict_to_workspace } : {}),
   }
 }
 
