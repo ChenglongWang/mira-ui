@@ -20,8 +20,8 @@ const MAX_QUESTION_PX = 300
 const QUESTION_GAP_PX = 12
 
 const STAGES: { key: PipelineStage; icon: string; labelKey: I18nKey }[] = [
+  { key: 'modules', icon: '◫', labelKey: 'modules' },
   { key: 'research', icon: '📚', labelKey: 'research' },
-  { key: 'plan', icon: '🗺️', labelKey: 'plan' },
   { key: 'experiment', icon: '🔬', labelKey: 'experiment' },
   { key: 'result', icon: '📝', labelKey: 'result' },
 ]
@@ -38,6 +38,7 @@ const CONTRACT_MODES: { key: ContractVersion; labelKey: 'contractCompat' | 'cont
 ]
 
 function stageBadge(task: ReturnType<typeof useProjectStore.getState>['tasks'][0], stage: PipelineStage): string | null {
+  if (stage === 'modules') return null
   if (stage === 'research') {
     const count = task.research.references.length
     return count > 0 ? `${count}` : null

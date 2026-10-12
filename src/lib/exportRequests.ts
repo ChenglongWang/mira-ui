@@ -2,7 +2,7 @@ import type { ProjectTask } from '@/types'
 
 export type ExportFormat = 'experiment_report' | 'paper_article' | 'presentation' | 'metadata'
 
-type ExportConfig = {
+export type ExportConfig = {
   title: string
   outputPath: string
   outputType: string
@@ -85,7 +85,11 @@ const EXPORT_CONFIG: Record<ExportFormat, ExportConfig> = {
   },
 }
 
-export function buildExportMessage(task: ProjectTask, format: ExportFormat): string {
+export function getExportConfig(format: ExportFormat): Readonly<ExportConfig> {
+  return EXPORT_CONFIG[format]
+}
+
+export function buildExportMessage(task: ProjectTask, format: ExportFormat, options?: { workflow?: boolean }): string {
   const cfg = EXPORT_CONFIG[format]
   const lines = [
     `Manual export request for ${task.id}.`,
@@ -103,8 +107,13 @@ export function buildExportMessage(task: ProjectTask, format: ExportFormat): str
   }
 
   lines.push('', 'Requirements:')
+  if (options?.workflow) {
+    lines.push('- Use configuration.selected_experiment, when present, as the experiment scope. Shared attachments may contain other experiments; do not include those as selected results or execute experiments again.')
+  }
   for (const requirement of cfg.requirements) {
-    lines.push(`- ${requirement}`)
+    lines.push(`- ${options?.workflow
+      ? requirement.replace(/task_plan\.json/g, 'the selected workflow record')
+      : requirement}`)
   }
 
   lines.push('', 'Verification:')
@@ -112,7 +121,9 @@ export function buildExportMessage(task: ProjectTask, format: ExportFormat): str
     lines.push(`- ${check}`)
   }
 
-  lines.push(
+  if (options?.workflow) {
+    lines.push('', 'Publish the deliverable using publish_workflow_artifact, then complete_workflow_run. Do not update the legacy plan.')
+  } else lines.push(
     '',
     'After finishing export, update task_plan.json.result with output_path, output_type, summary, and sections.',
     'Set task_plan.json.result.output_path exactly to the output path above.',

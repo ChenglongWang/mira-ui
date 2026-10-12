@@ -1,4 +1,5 @@
 import { useSettingsStore } from '@/stores/settingsStore'
+import { createUuid } from '@/lib/uuid'
 import type {
   AgentProfile,
   ContractVersion,
@@ -214,11 +215,19 @@ export async function deleteOrganizationChat(chatId: string): Promise<void> {
   await organizationRequest(`/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' })
 }
 
+export class ProjectDirectoryExistsError extends Error {
+  constructor(public readonly projectDir: string) {
+    super(`Project directory already exists: ${projectDir}`)
+    this.name = 'ProjectDirectoryExistsError'
+  }
+}
+
 export async function createRemoteProject(payload: {
   projectId?: string
   displayName?: string
   projectParentDir?: string
   projectDir?: string
+  allowExistingDir?: boolean
   runMode?: 'manual' | 'auto'
   agentProfile?: AgentProfile
   contractVersion?: ContractVersion
@@ -229,6 +238,7 @@ export async function createRemoteProject(payload: {
   if (payload.displayName) body.display_name = payload.displayName
   if (payload.projectParentDir) body.project_parent_dir = payload.projectParentDir
   if (payload.projectDir) body.project_dir = payload.projectDir
+  if (payload.allowExistingDir === true) body.allow_existing_dir = true
   if (payload.runMode) body.run_mode = payload.runMode
   if (payload.agentProfile) body.agent_profile = payload.agentProfile
   if (payload.contractVersion) body.contract_version = payload.contractVersion
@@ -240,7 +250,13 @@ export async function createRemoteProject(payload: {
     body: JSON.stringify(body),
   })
   if (!resp.ok) {
-    throw new Error(await resp.text())
+    const message = await resp.text()
+    let details: { code?: string; project_dir?: string } | null = null
+    try { details = JSON.parse(message) } catch { /* Older engines may return plain text. */ }
+    if (resp.status === 409 && details?.code === 'project_directory_exists' && typeof details.project_dir === 'string') {
+      throw new ProjectDirectoryExistsError(details.project_dir)
+    }
+    throw new Error(message)
   }
   return await resp.json() as RemoteProject
 }
@@ -306,9 +322,10 @@ export async function updateProjectRuntimePreferences(
   }
 }
 
-export async function fetchSessionHistory(sessionId: string): Promise<LogEntry[]> {
+export async function fetchSessionHistory(sessionId: string, workflowRunId?: string): Promise<LogEntry[]> {
   try {
-    const resp = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/history`)
+    const query = workflowRunId ? `?workflow_run_id=${encodeURIComponent(workflowRunId)}` : ''
+    const resp = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/history${query}`)
     if (!resp.ok) return []
     const data = await resp.json()
     return Array.isArray(data?.entries) ? (data.entries as LogEntry[]) : []
@@ -327,6 +344,87 @@ function readErrorMessage(data: unknown, fallback: string): string {
   const record = data && typeof data === 'object' ? data as Record<string, unknown> : {}
   const error = record.error ?? record.reason
   return typeof error === 'string' && error.trim().length > 0 ? error.trim() : fallback
+}
+
+export interface ChatContextAttachmentResult {
+  sessionId: string
+  sourceSessionId: string
+  path: string
+  messageCount: number
+}
+
+export interface ChatContextPreviewResult {
+  sourceSessionId: string
+  content: string
+  messageCount: number
+}
+
+export async function fetchChatContextPreview(
+  sourceSessionId: string,
+  entries: LogEntry[] = [],
+): Promise<ChatContextPreviewResult> {
+  const encoded = encodeURIComponent(sourceSessionId)
+  const resp = await fetch(
+    `${getApiUrl()}/sessions/${encoded}/context-preview`,
+    entries.length > 0 ? {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entries }),
+    } : undefined,
+  )
+  let data: unknown = null
+  try {
+    data = await resp.json()
+  } catch {
+    data = null
+  }
+  if (!resp.ok) {
+    throw new Error(readErrorMessage(data, `chat context preview failed (${resp.status})`))
+  }
+  const record = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  if (typeof record.content !== 'string') {
+    throw new Error('chat context preview response did not include content')
+  }
+  return {
+    sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : sourceSessionId,
+    content: record.content,
+    messageCount: typeof record.message_count === 'number' ? record.message_count : 0,
+  }
+}
+
+export async function attachChatContext(
+  sessionId: string,
+  sourceSessionId: string,
+  entries: LogEntry[] = [],
+): Promise<ChatContextAttachmentResult> {
+  const encoded = encodeURIComponent(sessionId)
+  const resp = await fetch(`${getApiUrl()}/projects/${encoded}/context/from-chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_session_id: sourceSessionId,
+      ...(entries.length > 0 ? { entries } : {}),
+    }),
+  })
+  let data: unknown = null
+  try {
+    data = await resp.json()
+  } catch {
+    data = null
+  }
+  if (!resp.ok) {
+    throw new Error(readErrorMessage(data, `chat context attachment failed (${resp.status})`))
+  }
+  const record = data && typeof data === 'object' ? data as Record<string, unknown> : {}
+  if (typeof record.path !== 'string' || !record.path) {
+    throw new Error('chat context attachment response did not include a path')
+  }
+  return {
+    sessionId: typeof record.session_id === 'string' ? record.session_id : sessionId,
+    sourceSessionId: typeof record.source_session_id === 'string' ? record.source_session_id : sourceSessionId,
+    path: record.path,
+    messageCount: typeof record.message_count === 'number' ? record.message_count : 0,
+  }
 }
 
 export async function deleteProject(
@@ -394,6 +492,8 @@ export interface DataPathValidationResult {
   error?: string
   kind?: 'file' | 'directory'
   resolved_path?: string
+  outside_workspace?: boolean
+  restrict_to_workspace?: boolean
 }
 
 export async function uploadProjectFiles(
@@ -433,11 +533,11 @@ export async function uploadProjectFiles(
   }
 }
 
-export async function validateDataPath(path: string): Promise<DataPathValidationResult> {
+export async function validateDataPath(path: string, purpose?: 'experiment_input'): Promise<DataPathValidationResult> {
   const resp = await fetch(`${getApiUrl()}/data-path/validate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, ...(purpose ? { purpose } : {}) }),
   })
   if (!resp.ok) {
     let msg = ''
@@ -455,6 +555,8 @@ export async function validateDataPath(path: string): Promise<DataPathValidation
     error: typeof data?.error === 'string' ? data.error : undefined,
     kind: data?.kind === 'file' || data?.kind === 'directory' ? data.kind : undefined,
     resolved_path: typeof data?.resolved_path === 'string' ? data.resolved_path : undefined,
+    ...(typeof data?.outside_workspace === 'boolean' ? { outside_workspace: data.outside_workspace } : {}),
+    ...(typeof data?.restrict_to_workspace === 'boolean' ? { restrict_to_workspace: data.restrict_to_workspace } : {}),
   }
 }
 
@@ -534,4 +636,119 @@ export async function uninstallSkillPlugin(sessionId: string, pluginId: string):
   }
   const data = await resp.json()
   return Array.isArray(data?.plugins) ? (data.plugins as SkillPlugin[]) : []
+}
+
+/* Modular workflow v1 */
+
+export async function fetchWorkflowSnapshot(projectId: string): Promise<import('@/types').WorkflowSnapshot> {
+  const response = await fetch(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}`)
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as import('@/types').WorkflowSnapshot
+}
+
+export async function createWorkflowRun(
+  projectId: string,
+  payload: {
+    moduleType: import('@/types').WorkflowModuleType
+    label?: string
+    moduleData?: Record<string, unknown>
+    inputs?: Array<{ artifact_id: string }>
+    enqueue?: boolean
+  },
+): Promise<{ run_id: string; project_sequence: number }> {
+  const response = await fetch(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/runs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command_id: createUuid(),
+      module_type: payload.moduleType,
+      label: payload.label,
+      module_data: payload.moduleData,
+      inputs: payload.inputs,
+      enqueue: payload.enqueue ?? false,
+    }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as { run_id: string; project_sequence: number }
+}
+
+export async function importWorkflowArtifact(
+  projectId: string,
+  sourcePath: string,
+  artifactType = 'file',
+): Promise<import('@/types').WorkflowArtifact> {
+  const response = await fetch(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      command_id: createUuid(),
+      source_path: sourcePath,
+      artifact_type: artifactType,
+    }),
+  })
+  if (!response.ok) throw new Error(await response.text())
+  const payload = await response.json() as { artifact: import('@/types').WorkflowArtifact }
+  return payload.artifact
+}
+
+export async function fetchWorkflowArtifact(
+  projectId: string,
+  artifactId: string,
+): Promise<import('@/types').WorkflowArtifact> {
+  const response = await fetch(
+    `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`,
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as import('@/types').WorkflowArtifact
+}
+
+export function getWorkflowArtifactContentUrl(projectId: string, artifactId: string): string {
+  return `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/content`
+}
+
+export async function commandWorkflowRun(
+  projectId: string,
+  runId: string,
+  commandType: string,
+  revision: number,
+  payload?: Record<string, unknown>,
+): Promise<{ project_sequence: number }> {
+  const response = await fetch(
+    `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/runs/${encodeURIComponent(runId)}/commands`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command_id: createUuid(),
+        command_type: commandType,
+        expected_revision: revision,
+        payload: payload ?? {},
+      }),
+    },
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as { project_sequence: number }
+}
+
+export async function commandWorkflowProject(
+  projectId: string,
+  commandType: string,
+  revision: number,
+  payload?: Record<string, unknown>,
+): Promise<{ project_sequence: number }> {
+  const response = await fetch(
+    `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/commands`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        command_id: createUuid(),
+        command_type: commandType,
+        expected_revision: revision,
+        payload: payload ?? {},
+      }),
+    },
+  )
+  if (!response.ok) throw new Error(await response.text())
+  return await response.json() as { project_sequence: number }
 }

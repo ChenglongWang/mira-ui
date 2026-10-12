@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useAgentStore } from '@/stores/agentStore'
 import { useProjectStore } from '@/stores/projectStore'
+import { useWorkflowStore } from '@/stores/workflowStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -40,18 +41,11 @@ function deriveActivityLabel(logs: AgentLogEntry[]): string | null {
   return null
 }
 
-// Build a project-description seed from a chat's transcript so promoting a
-// conversation into a research project carries the context forward.
-function buildPromotePrefill(logs: AgentLogEntry[]): string {
-  const lines: string[] = []
-  for (const entry of logs) {
-    if (entry.type !== 'response') continue
-    const who = entry.metadata?._user ? 'User' : 'Mira'
-    const text = entry.content.trim()
-    if (!text) continue
-    lines.push(`${who}: ${text}`)
-  }
-  return lines.join('\n\n').slice(0, 4000)
+function deriveWorkflowActivityLabel(activity: string | undefined): string | null {
+  if (!activity) return null
+  const normalized = activity.trim()
+  if (!normalized || /^mira is working(?:\.\.\.)?$/i.test(normalized)) return null
+  return condenseActivity(normalized, 80)
 }
 
 type RenderItem =
@@ -279,21 +273,47 @@ export function AgentPanel() {
   const lang = useSettingsStore((s) => s.language)
   const appMode = useProjectStore((s) => s.appMode)
   const selectedTaskId = useProjectStore((s) => s.selectedTaskId)
-  const mode = useProjectStore((s) => s.mode)
+  const selectedWorkflowRunId = useWorkflowStore((s) => (
+    selectedTaskId ? s.selectedRunByProject[selectedTaskId] : null
+  ))
+  const selectedWorkflowRun = useWorkflowStore((s) => (
+    selectedTaskId && selectedWorkflowRunId
+      ? s.snapshots[selectedTaskId]?.runs.find((run) => run.run_id === selectedWorkflowRunId)
+      : undefined
+  ))
+  const workflowSnapshot = useWorkflowStore((s) => (
+    selectedTaskId ? s.snapshots[selectedTaskId] : undefined
+  ))
+  const workflowActivity = useWorkflowStore((s) => (
+    selectedWorkflowRunId ? s.activityByRun[selectedWorkflowRunId] : undefined
+  ))
+  const activeStage = useProjectStore((s) => s.activeStage)
   const activeChatId = useChatStore((s) => s.activeChatId)
   const touchChat = useChatStore((s) => s.touchChat)
   const openNewProject = useUiStore((s) => s.openNewProject)
   const isChat = appMode === 'normal'
   // The active surface is either a research project or a Quick Chat thread.
   const sessionId = isChat ? activeChatId : selectedTaskId
-  // Auto / manual is a project-mode concept — in chat the toggle
-  // is hidden, so the AUTO badge in the header should be hidden too.
-  const isAuto = appMode === 'project' && mode === 'auto'
+  const conversationId = sessionId && !isChat && selectedWorkflowRunId
+    ? `${sessionId}:run:${selectedWorkflowRunId}`
+    : sessionId
+  const moduleConversationBlocked = !isChat && activeStage === 'modules' && !!workflowSnapshot && (
+    !selectedWorkflowRun
+    || selectedWorkflowRun.status === 'completed'
+    || selectedWorkflowRun.status === 'cancelled'
+    || selectedWorkflowRun.status === 'failed'
+    || selectedWorkflowRun.status === 'paused'
+    || selectedWorkflowRun.status === 'waiting_input'
+  )
+  const composerSessionId = moduleConversationBlocked ? null : sessionId
+  const experimentMode = appMode === 'project' && selectedWorkflowRun?.module_type === 'experiment'
+    ? (selectedWorkflowRun.module_data.experiment_execution_mode === 'manual' ? 'MANUAL' : 'AUTO')
+    : null
 
-  const logs = sessionId ? (logsByProject[sessionId] ?? []) : []
+  const logs = conversationId ? (logsByProject[conversationId] ?? []) : []
   // Streaming is tracked per session so a different session's activity never
   // lights up this panel (e.g. a freshly created chat).
-  const isStreaming = Boolean(sessionId && streamingBySession[sessionId])
+  const isStreaming = Boolean(conversationId && streamingBySession[conversationId])
   const isStopping = Boolean(sessionId && stoppingBySession[sessionId])
   const skillPlugins = useSkillPluginsStore((s) => s.plugins)
   const loadSkillPlugins = useSkillPluginsStore((s) => s.load)
@@ -307,6 +327,20 @@ export function AgentPanel() {
   useEffect(() => {
     if (connected) void loadSkillPlugins(GLOBAL_SKILLS_SESSION_ID)
   }, [connected, loadSkillPlugins])
+
+  const wasStreaming = useRef(false)
+  useEffect(() => {
+    if (
+      wasStreaming.current
+      && !isStreaming
+      && !isChat
+      && selectedTaskId
+      && selectedWorkflowRunId
+    ) {
+      void useWorkflowStore.getState().loadProject(selectedTaskId)
+    }
+    wasStreaming.current = isStreaming
+  }, [isChat, isStreaming, selectedTaskId, selectedWorkflowRunId])
   // Once tokens are actively streaming into the last entry, the growing bubble
   // is the activity indicator — drop the separate "thinking" dots so they don't
   // sit redundantly beneath the live reply.
@@ -315,7 +349,11 @@ export function AgentPanel() {
   const showThinking = isStreaming && !isStreamingEntryLive
   // Surface the current task (e.g. latest tool call) so the indicator proves
   // Mira is actively working rather than a static "thinking" spinner.
-  const activityLabel = useMemo(() => deriveActivityLabel(logs), [logs])
+  const activityLabel = useMemo(
+    () => deriveActivityLabel(logs)
+      ?? (!isChat ? deriveWorkflowActivityLabel(workflowActivity) : null),
+    [isChat, logs, workflowActivity],
+  )
 
   const [collapsedProgressGroups, setCollapsedProgressGroups] = useState<Record<string, boolean>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -365,15 +403,15 @@ export function AgentPanel() {
 
     let cancelled = false
     void (async () => {
-      const history = await fetchSessionHistory(sessionId)
+      const history = await fetchSessionHistory(sessionId, isChat ? undefined : (selectedWorkflowRunId ?? undefined))
       if (cancelled || history.length === 0) return
-      hydrateLogs(sessionId, history)
+      hydrateLogs(conversationId ?? sessionId, history)
     })()
 
     return () => {
       cancelled = true
     }
-  }, [sessionId, hydrateLogs])
+  }, [conversationId, hydrateLogs, isChat, selectedWorkflowRunId, sessionId])
 
   useEffect(() => {
     if (!connected || !sessionId) return
@@ -387,9 +425,9 @@ export function AgentPanel() {
   }, [connected, sessionId])
 
   const handleSend = (text: string, selectedSkills: string[] = []) => {
-    if (!sessionId) return
+    if (!composerSessionId || !sessionId) return
     if (isChat) touchChat(sessionId, text)
-    useAgentStore.getState().addLog(sessionId, {
+    useAgentStore.getState().addLog(conversationId ?? sessionId, {
       id: `user-${Date.now()}`,
       timestamp: new Date().toISOString(),
       content: text,
@@ -397,12 +435,31 @@ export function AgentPanel() {
       metadata: { _user: true },
     })
     if (connected) {
-      useAgentStore.getState().markSessionPending(sessionId)
+      useAgentStore.getState().markSessionPending(conversationId ?? sessionId)
     }
 
     const { mode: currentMode, agentProfile: currentAgentProfile } = useProjectStore.getState()
     const turnId = createClientId('turn')
     activeTurnIds.current[sessionId] = turnId
+    const workflowState = useWorkflowStore.getState()
+    const workflowRunId = appMode === 'project'
+      ? workflowState.selectedRunByProject[sessionId]
+      : null
+    const workflowRun = appMode === 'project'
+      ? workflowState.snapshots[sessionId]?.runs.find((run) => run.run_id === workflowRunId)
+      : undefined
+    if (workflowRun?.status === 'created') {
+      void workflowState.commandRun(sessionId, workflowRun.run_id, 'enqueue').then(() => {
+        wsClient.send({
+          type: 'message', content: text, session_id: sessionId, user_id: 'ui_user',
+          loop_mode: appMode, stream: useSettingsStore.getState().streamResponses,
+          mode: currentMode, agent_profile: currentAgentProfile,
+          turn_id: turnId, selected_skill_ids: selectedSkills,
+          workflow_run_id: workflowRun.run_id, workflow_module_type: workflowRun.module_type,
+        })
+      })
+      return
+    }
     wsClient.send({
       type: 'message',
       content: text,
@@ -415,14 +472,18 @@ export function AgentPanel() {
       ...(appMode === 'project' && {
         mode: currentMode,
         agent_profile: currentAgentProfile,
+        ...(workflowRun && {
+          workflow_run_id: workflowRun.run_id,
+          workflow_module_type: workflowRun.module_type,
+        }),
       }),
     })
   }
 
   const handleResend = (content: string) => {
-    if (!sessionId) return
+    if (!composerSessionId || !sessionId) return
 
-    useAgentStore.getState().addLog(sessionId, {
+    useAgentStore.getState().addLog(conversationId ?? sessionId, {
       id: `user-${Date.now()}`,
       timestamp: new Date().toISOString(),
       content,
@@ -430,10 +491,17 @@ export function AgentPanel() {
       metadata: { _user: true },
     })
     if (connected) {
-      useAgentStore.getState().markSessionPending(sessionId)
+      useAgentStore.getState().markSessionPending(conversationId ?? sessionId)
     }
 
     const { mode: currentMode, agentProfile: currentAgentProfile } = useProjectStore.getState()
+    const workflowState = useWorkflowStore.getState()
+    const workflowRunId = appMode === 'project'
+      ? workflowState.selectedRunByProject[sessionId]
+      : null
+    const workflowRun = appMode === 'project'
+      ? workflowState.snapshots[sessionId]?.runs.find((run) => run.run_id === workflowRunId)
+      : undefined
     wsClient.send({
       type: 'message',
       content,
@@ -444,6 +512,10 @@ export function AgentPanel() {
       ...(appMode === 'project' && {
         mode: currentMode,
         agent_profile: currentAgentProfile,
+        ...(workflowRun && {
+          workflow_run_id: workflowRun.run_id,
+          workflow_module_type: workflowRun.module_type,
+        }),
       }),
     })
   }
@@ -461,6 +533,13 @@ export function AgentPanel() {
       turn_id: activeTurnIds.current[sessionId],
       request_id: createClientId('stop'),
     })
+    if (!isChat && selectedWorkflowRunId) {
+      const workflowState = useWorkflowStore.getState()
+      const run = workflowState.snapshots[sessionId]?.runs.find((item) => item.run_id === selectedWorkflowRunId)
+      if (run?.status === 'running') {
+        void workflowState.commandRun(sessionId, run.run_id, 'pause')
+      }
+    }
   }
 
   const handleSkillFallback = (approved: boolean, skillIds: string[]) => {
@@ -492,14 +571,14 @@ export function AgentPanel() {
         <span className="text-[10px] text-[var(--color-text-muted)]">
           {connected ? t('connected', lang) : t('disconnected', lang)}
         </span>
-        {isAuto && (
+        {experimentMode && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] font-medium">
-            AUTO
+            {experimentMode}
           </span>
         )}
         {sessionId && isChat && (
           <button
-            onClick={() => openNewProject({ prefill: buildPromotePrefill(logs), fromChatId: sessionId })}
+            onClick={() => openNewProject({ fromChatId: sessionId })}
             title={t('promoteToProjectHint', lang)}
             className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-[var(--color-accent)] border border-[var(--color-accent)]/30 hover:bg-[var(--color-accent)]/10 transition-colors"
           >
@@ -666,7 +745,7 @@ export function AgentPanel() {
       </div>
 
       <ChatComposer
-        sessionId={sessionId}
+        sessionId={composerSessionId}
         isStreaming={isStreaming}
         isStopping={isStopping}
         availableSkills={availableSkills}

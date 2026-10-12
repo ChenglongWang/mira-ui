@@ -5,7 +5,13 @@ import { useChatStore } from '@/stores/chatStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useAgentStore } from '@/stores/agentStore'
 import { wsClient } from '@/services/websocket'
-import { uploadProjectFiles, validateDataPath } from '@/services/api'
+import {
+  ProjectDirectoryExistsError,
+  attachChatContext,
+  fetchChatContextPreview,
+  uploadProjectFiles,
+  validateDataPath,
+} from '@/services/api'
 import { cn } from '@/lib/utils'
 import type {
   AgentProfile,
@@ -17,6 +23,7 @@ import type {
   NewProjectInput,
 } from '@/types'
 import { t } from '@/i18n'
+import { joinProjectPath, slugifyProjectId } from '@/lib/projectPaths'
 
 const GOAL_OPERATORS: AutomationGoalOperator[] = ['>', '>=', '<', '<=', '==']
 const DEFAULT_GOAL: AutomationGoal = { metric: '', operator: '>', value: Number.NaN }
@@ -81,22 +88,6 @@ function dedupePaths(paths: string[]): string[] {
   return result
 }
 
-function slugifyProjectId(value: string): string {
-  let text = value.trim().toLowerCase()
-  text = text.replace(/[\\/:]/g, '-')
-  text = text.split(/\s+/).filter(Boolean).join('-')
-  while (text.includes('--')) text = text.replace(/--/g, '-')
-  text = text.replace(/^[._-]+|[._-]+$/g, '')
-  return text.slice(0, 128) || 'project'
-}
-
-function joinProjectPath(parent: string, projectId: string): string {
-  const base = parent.trim().replace(/[\\/]+$/, '')
-  if (!base) return projectId
-  const separator = base.includes('\\') && !base.includes('/') ? '\\' : '/'
-  return `${base}${separator}${projectId}`
-}
-
 function detectPreferredReplyLanguage(text: string): 'zh' | 'en' {
   const hanCount = (text.match(/[\u3400-\u9fff]/g) ?? []).length
   const latinCount = (text.match(/[A-Za-z]/g) ?? []).length
@@ -111,6 +102,7 @@ function buildAgentMessage(
   projectId: string,
   uploadedDataPaths: string[],
   uploadedReferencePaths: string[],
+  contextAttachmentPaths: string[],
   runMode: 'manual' | 'auto',
 ): string {
   const preferredLanguage = detectPreferredReplyLanguage([
@@ -122,10 +114,11 @@ function buildAgentMessage(
     ``,
     `**Project ID**: ${projectId}`,
     `**Project Directory**: ${projectDir}`,
-    ``,
-    `## Research Description`,
-    input.description,
   ]
+
+  if (input.description) {
+    lines.push('', `## Research Description`, input.description)
+  }
 
   if (uploadedDataPaths.length > 0) {
     lines.push('', `## Uploaded Data Files`)
@@ -144,6 +137,19 @@ function buildAgentMessage(
       '',
       `These files are saved under ${projectDir}/references.`,
       'Prioritize reading and analyzing these reference materials before external literature search.',
+    )
+  }
+
+  if (contextAttachmentPaths.length > 0) {
+    lines.push('', '## Conversation Context Attachment')
+    for (const path of contextAttachmentPaths) {
+      lines.push(`- ${path}`)
+    }
+    lines.push(
+      '',
+      input.description
+        ? 'Read this attachment before planning. Use it as background context while treating the Research Description above as the current objective.'
+        : 'Read this attachment before planning and derive the current objective from the user messages it contains.',
     )
   }
 
@@ -242,7 +248,11 @@ function getFileDisplayPath(file: File): string {
 }
 
 export function NewProjectModal() {
-  const { newProjectOpen, closeNewProject, newProjectPrefill, newProjectFromChatId } = useUiStore()
+  const {
+    newProjectOpen,
+    closeNewProject,
+    newProjectFromChatId,
+  } = useUiStore()
   const removeChat = useChatStore((s) => s.removeChat)
   const {
     tasks,
@@ -281,6 +291,7 @@ export function NewProjectModal() {
   const [pathCheck, setPathCheck] = useState<PathCheckState>({ status: 'idle', message: '' })
   const [creating, setCreating] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [existingDir, setExistingDir] = useState<string | null>(null)
   const [title, setTitle] = useState('')
   const [references, setReferences] = useState('')
   const [computeBudget, setComputeBudget] = useState('')
@@ -292,6 +303,9 @@ export function NewProjectModal() {
   const [goalValueInputs, setGoalValueInputs] = useState<string[]>([''])
   const [maxExperiments, setMaxExperiments] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
+  const [contextPreview, setContextPreview] = useState<string | null>(null)
+  const [contextPreviewLoading, setContextPreviewLoading] = useState(false)
+  const [contextPreviewError, setContextPreviewError] = useState('')
 
   const projectIdPreview = slugifyProjectId(projectName)
   const projectDirPreview = customProjectDirAllowed
@@ -299,7 +313,7 @@ export function NewProjectModal() {
     : ''
   const canCreate = (
     projectName.trim().length > 0
-    && description.trim().length > 0
+    && (description.trim().length > 0 || newProjectFromChatId !== null)
     && connected
     && projectsLoaded
     && !creating
@@ -360,19 +374,23 @@ export function NewProjectModal() {
     node.setAttribute('directory', '')
   }, [])
 
-  // Seed the description when opened with a prefill (e.g. promoting a Quick
-  // Chat into a project). Only fill an empty field so we never clobber edits.
+  // Promoted chats use the conversation attachment as context, so their
+  // research description starts empty and is optional.
   useEffect(() => {
-    if (newProjectOpen && newProjectPrefill && !description.trim()) {
-      setDescription(newProjectPrefill)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [newProjectOpen, newProjectPrefill])
+    if (newProjectOpen && newProjectFromChatId) setDescription('')
+    setContextPreview(null)
+    setContextPreviewLoading(false)
+    setContextPreviewError('')
+  }, [newProjectOpen, newProjectFromChatId])
 
   useEffect(() => {
     if (!newProjectOpen) return
     setProjectParentDir(defaultProjectParentDir)
   }, [newProjectOpen, defaultProjectParentDir])
+
+  useEffect(() => {
+    setExistingDir(null)
+  }, [projectName, projectParentDir, customProjectDirAllowed, newProjectOpen])
 
   if (!newProjectOpen) return null
 
@@ -468,6 +486,27 @@ export function NewProjectModal() {
     }
   }
 
+  const handleContextPreview = async () => {
+    if (!newProjectFromChatId || contextPreviewLoading) return
+    setContextPreviewLoading(true)
+    setContextPreviewError('')
+    try {
+      const preview = await fetchChatContextPreview(
+        newProjectFromChatId,
+        useAgentStore.getState().getProjectLogs(newProjectFromChatId),
+      )
+      setContextPreview(preview.content)
+    } catch (err) {
+      setContextPreviewError(
+        err instanceof TypeError
+          ? t('contextPreviewUnavailable', lang)
+          : err instanceof Error ? err.message : t('contextPreviewFailed', lang),
+      )
+    } finally {
+      setContextPreviewLoading(false)
+    }
+  }
+
   const addGoal = () => {
     setGoals((prev) => [...prev, { ...DEFAULT_GOAL }])
     setGoalValueInputs((prev) => [...prev, ''])
@@ -537,6 +576,7 @@ export function NewProjectModal() {
       : undefined
 
     const input: NewProjectInput = {
+      allowExistingDir: existingDir !== null,
       projectId: slugifyProjectId(projectName),
       displayName: projectName.trim(),
       projectParentDir: customProjectDirAllowed
@@ -563,6 +603,7 @@ export function NewProjectModal() {
         || (input.projectParentDir ? joinProjectPath(input.projectParentDir, projectId) : projectId)
       let uploadedDataPaths: string[] = []
       let uploadedReferencePaths: string[] = []
+      let contextAttachmentPaths: string[] = []
 
       try {
         const dataUpload = await uploadProjectFiles(projectId, selectedFiles, 'data')
@@ -573,9 +614,19 @@ export function NewProjectModal() {
           ...referencesUpload.uploaded.map((file) => file.path),
           ...referencesUpload.extracted.map((item) => item.path),
         ])
+
+        if (newProjectFromChatId) {
+          const attached = await attachChatContext(
+            projectId,
+            newProjectFromChatId,
+            useAgentStore.getState().getProjectLogs(newProjectFromChatId),
+          )
+          contextAttachmentPaths = [attached.path]
+        }
       } catch (err) {
         try {
-          await deleteTask(projectId, true)
+          // Reused workspaces may contain user data from before this request.
+          await deleteTask(projectId, !input.allowExistingDir)
         } catch {
           // Preserve the upload error shown to the user; cleanup can be retried from the queue.
         }
@@ -595,6 +646,7 @@ export function NewProjectModal() {
         projectId,
         uploadedDataPaths,
         uploadedReferencePaths,
+        contextAttachmentPaths,
         mode,
       )
       useAgentStore.getState().addLog(projectId, {
@@ -646,7 +698,11 @@ export function NewProjectModal() {
       setUploadError('')
       closeNewProject()
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : t('unknownError', lang))
+      if (err instanceof ProjectDirectoryExistsError) {
+        setExistingDir(err.projectDir)
+      } else {
+        setUploadError(err instanceof Error ? err.message : t('unknownError', lang))
+      }
       setCreating(false)
     }
   }
@@ -723,11 +779,15 @@ export function NewProjectModal() {
             </div>
           )}
 
-          {/* Research Description — required */}
+          {existingDir && (
+            <p role="alert" className="text-xs text-[var(--color-text-secondary)]">{t('projectDirectoryExists', lang, { path: existingDir })}</p>
+          )}
+
+          {/* Research Description — optional when promoted from a chat */}
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-[var(--color-text-secondary)] flex items-center gap-1">
               {t('researchDescription', lang)}
-              <span className="text-red-400">*</span>
+              {!newProjectFromChatId && <span className="text-red-400">*</span>}
             </label>
             <textarea
               value={description}
@@ -736,6 +796,22 @@ export function NewProjectModal() {
               rows={4}
               className="w-full bg-[var(--color-input-bg)] text-[var(--color-text-primary)] text-sm rounded-lg px-3 py-2.5 border border-[var(--color-border)] outline-none focus:border-[var(--color-accent)] placeholder:text-[var(--color-text-muted)] resize-none leading-relaxed"
             />
+            {newProjectFromChatId && (
+              <div className="flex items-center gap-2">
+                <p className="min-w-0 flex-1 text-[11px] text-[var(--color-text-muted)]">
+                  {t('promoteContextAttachmentNotice', lang)}
+                </p>
+                <button
+                  type="button"
+                  disabled={contextPreviewLoading}
+                  onClick={() => { void handleContextPreview() }}
+                  className="shrink-0 rounded-md border border-[var(--color-border)] px-2 py-1 text-[11px] text-[var(--color-accent)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+                >
+                  {t(contextPreviewLoading ? 'contextPreviewLoading' : 'contextPreview', lang)}
+                </button>
+              </div>
+            )}
+            {contextPreviewError && <p role="alert" className="text-[11px] text-red-400">{contextPreviewError}</p>}
           </div>
 
           {/* Runtime Preferences */}
@@ -1194,7 +1270,7 @@ export function NewProjectModal() {
                 : 'bg-[var(--color-bg-tertiary)] text-[var(--color-text-muted)] cursor-not-allowed',
             )}
           >
-            {creating ? t('creating', lang) : t('createProject', lang)}
+            {t(creating ? 'creating' : existingDir ? 'createInExistingDirectory' : 'createProject', lang)}
           </button>
         </div>
         {!connected && (
@@ -1203,6 +1279,30 @@ export function NewProjectModal() {
           </p>
         )}
       </div>
+      {contextPreview !== null && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--color-overlay)] p-4">
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('contextPreviewTitle', lang)}
+            className="flex max-h-[80vh] w-full max-w-[720px] flex-col overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-2xl"
+          >
+            <div className="flex items-center justify-between border-b border-[var(--color-border)] px-5 py-3">
+              <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">{t('contextPreviewTitle', lang)}</h3>
+              <button
+                type="button"
+                onClick={() => setContextPreview(null)}
+                className="rounded-md px-2 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+              >
+                {t('contextPreviewClose', lang)}
+              </button>
+            </div>
+            <pre className="overflow-auto whitespace-pre-wrap break-words p-5 text-xs leading-relaxed text-[var(--color-text-secondary)]">
+              {contextPreview}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

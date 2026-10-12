@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   installLocalEngineService: () => ipcRenderer.invoke('engine:install-service'),
   startLocalEngine: () => ipcRenderer.invoke('engine:start'),
   stopLocalEngine: () => ipcRenderer.invoke('engine:stop'),
+  restartLocalEngine: () => ipcRenderer.invoke('engine:restart'),
   doctorLocalEngine: () => ipcRenderer.invoke('engine:doctor'),
   upgradeLocalEngine: (packageName = 'mira-engine') => ipcRenderer.invoke('engine:upgrade', packageName),
   repairLocalEngineService: () => ipcRenderer.invoke('engine:repair-service'),

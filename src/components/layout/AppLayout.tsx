@@ -18,6 +18,7 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useFeedbackStore } from '@/stores/feedbackStore'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { useUpdateCheck } from '@/hooks/useUpdateCheck'
+import { useWorkflowWebSocket } from '@/hooks/useWorkflowWebSocket'
 import { cn } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { t } from '@/i18n'
@@ -139,11 +140,13 @@ export function AppLayout() {
   // center column and the right agent panel (and project-only experiment
   // timeline) are hidden. Project mode keeps the 3-column research layout.
   const isChat = appMode === 'normal'
+  const isProjectOverview = !isChat && activeStage === 'modules'
   // Suppress width transitions while actively dragging a splitter so the panel
   // tracks the cursor 1:1 instead of easing behind it.
   const [resizing, setResizing] = useState(false)
   const flushPendingFeedback = useFeedbackStore((s) => s.flushPending)
   useWebSocket()
+  useWorkflowWebSocket()
   useUpdateCheck()
 
   useEffect(() => {
@@ -198,7 +201,7 @@ export function AppLayout() {
         </div>
 
         {/* Right agent panel — project mode only (in chat mode the chat is centered) */}
-        {!isChat && (
+        {!isChat && !isProjectOverview && (
           <>
             <SplitterToggle
               onToggle={toggleAgentPanel}
