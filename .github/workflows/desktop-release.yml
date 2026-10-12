@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Version to rehearse (build only, e.g. v0.4.5rc1)'
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -23,14 +32,12 @@ jobs:
       - name: Validate compatibility.json schema
         run: node scripts/validate-compatibility.mjs --file compatibility.json
 
-      - name: Tag must match compatibility.json#ui
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Release version must match compatibility.json#ui
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/v}"
           node scripts/validate-compatibility.mjs \
             --file compatibility.json \
-            --require-ui "$TAG"
+            --require-ui "${RELEASE_TAG#v}"
 
   build-standalone:
     needs: verify-compatibility
@@ -40,9 +47,6 @@ jobs:
         os: [macos-latest, windows-latest]
 
     runs-on: ${{ matrix.os }}
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,6 +108,8 @@ jobs:
 
       - name: Build Windows standalone artifacts
         if: matrix.os == 'windows-latest'
+        # PowerShell splits unquoted -c.publish.* into -c and .publish.*.
+        shell: bash
         run: npm run dist:win -- -c.publish.provider=github -c.publish.owner=MIRA-Intelligence -c.publish.repo=mira-ui -c.publish.channel=${{ env.RELEASE_CHANNEL }}
 
       - name: Package Windows standalone setup as zip
@@ -155,7 +161,6 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     env:
-      RELEASE_TAG: ${{ github.ref_name }}
       MIRA_ENGINE_REPO: MIRA-Intelligence/mira
 
     steps:
@@ -233,6 +238,7 @@ jobs:
 
       - name: Build Windows bundle artifacts
         if: matrix.os == 'windows-latest'
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           MIRA_FEISHU_WEBHOOK_URL: ${{ secrets.MIRA_FEISHU_WEBHOOK_URL }}
@@ -283,13 +289,11 @@ jobs:
             release-bundle/*-win-bundle.yml
 
   publish-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs:
       - build-standalone
       - build-bundle
     runs-on: ubuntu-latest
-    env:
-      RELEASE_TAG: ${{ github.ref_name }}
-
     steps:
       - name: Download packaged desktop artifacts
         uses: actions/download-artifact@v4
