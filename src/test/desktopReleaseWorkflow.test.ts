@@ -8,8 +8,10 @@ describe('desktop release workflow', () => {
     it(`preserves dotted electron-builder arguments on Windows ${kind}`, () => {
       const step = workflow.split(`- name: Build Windows ${kind} artifacts`)[1]?.split('\n      - name:')[0]
       expect(step).toBeDefined()
-      expect(step).toContain('shell: bash')
-      expect(step).toContain('-c.publish.channel=${{ env.RELEASE_CHANNEL }}')
+      expect(step).toContain('shell: pwsh')
+      for (const option of ['provider=github', 'owner=MIRA-Intelligence', 'repo=mira-ui', 'channel=${{ env.RELEASE_CHANNEL }}']) {
+        expect(step).toContain(`'-c.publish.${option}'`)
+      }
     })
   }
 
