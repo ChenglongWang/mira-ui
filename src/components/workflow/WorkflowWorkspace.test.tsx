@@ -1,5 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fetchJournalProfiles } from '@/services/journals'
+import { journalFixture } from '@/test/journalFixtures'
+
+vi.mock('@/services/journals', async (original) => ({ ...await original<typeof import('@/services/journals')>(), fetchJournalProfiles: vi.fn().mockResolvedValue([]) }))
 
 vi.mock('@/services/api', () => ({
   commandWorkflowProject: vi.fn(),
@@ -268,12 +272,18 @@ describe('WorkflowWorkspace module entry', () => {
     })))
   })
 
-  it.each(['auto', 'manual'] as const)('persists %s mode with experiment limits and stopping conditions', async (mode) => {
-    useProjectStore.setState({ mode: 'manual' }) // legacy preference must not set the new default
+  it.each([['auto', 1], ['auto', 2], ['manual', 1], ['manual', 2]] as const)('persists %s execution and %s acceptance with experiment limits', async (mode, contractVersion) => {
+    useProjectStore.setState({ mode: 'manual', contractVersion: 2 }) // legacy preferences must not set the new defaults
     render(<WorkflowWorkspace />)
 
     fireEvent.click(screen.getByRole('button', { name: /Experiment.*Start module/i }))
     expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Compat' })).toHaveAttribute('aria-pressed', 'true')
+    const execution = screen.getByRole('group', { name: 'Experiment execution mode' })
+    const acceptance = screen.getByRole('group', { name: 'Experiment acceptance mode' })
+    expect(execution.parentElement).toBe(acceptance.parentElement)
+    expect(execution.parentElement).toHaveClass('grid-cols-2')
+    if (contractVersion === 2) fireEvent.click(screen.getByRole('button', { name: 'Strict' }))
     if (mode === 'manual') fireEvent.click(screen.getByRole('button', { name: 'Manual' }))
     fireEvent.click(screen.getByRole('button', { name: '+ Add stopping condition' }))
     fireEvent.change(screen.getByLabelText('Stopping metric 1'), {
@@ -300,6 +310,7 @@ describe('WorkflowWorkspace module entry', () => {
           confirmation_policy: { mode: 'required' },
           intent: 'Why?',
           experiment_execution_mode: mode,
+          experiment_contract_version: contractVersion,
           automation_policy: {
             logic: 'AND',
             goals: [{ metric: 'accuracy', operator: '>=', value: 0.95 }],
@@ -313,7 +324,8 @@ describe('WorkflowWorkspace module entry', () => {
     })
   })
 
-  it('starts a continued branch with inherited artifacts instead of leaving it queued', async () => {
+  it.each([false, true])('starts a continued branch with inherited artifacts and journal selection=%s', async (selectJournal) => {
+    vi.mocked(fetchJournalProfiles).mockResolvedValue([journalFixture])
     const completedSnapshot: WorkflowSnapshot = {
       ...snapshot,
       project_sequence: 2,
@@ -360,6 +372,10 @@ describe('WorkflowWorkspace module entry', () => {
       target: { value: 'Write a concise research report from the selected direction' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Journal Article/ }))
+    if (selectJournal) {
+      await waitFor(() => expect(screen.getByLabelText('Target journal')).toBeEnabled())
+      fireEvent.change(screen.getByLabelText('Target journal'), { target: { value: 'mrm' } })
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Start and open module' }))
 
     await waitFor(() => {
@@ -370,6 +386,7 @@ describe('WorkflowWorkspace module entry', () => {
           confirmation_policy: { mode: 'required' },
           delivery_format: 'paper_article',
           intent: 'Write a concise research report from the selected direction',
+          ...(selectJournal ? { target_journal: 'mrm', journal_profile_version: '2026-10-12' } : {}),
           output_path: 'result/exports/journal_article.docx',
           output_type: 'article_docx',
           parent_run_id: 'source-run',

@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react'
+import { JournalTargetSelect } from './JournalTargetSelect'
+import { journalSelection, type JournalProfile } from '@/services/journals'
 
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -30,6 +32,7 @@ import {
 } from '@/lib/workflowCandidates'
 import { PipelineOverview } from './PipelineOverview'
 import { ExperimentExecutionMode } from './ExperimentExecutionMode'
+import { ExperimentContractMode } from './ExperimentContractMode'
 import { ExperimentInputPaths } from './ExperimentInputPaths'
 import { WorkflowDebugPanel } from './WorkflowDebugPanel'
 
@@ -290,7 +293,9 @@ export function WorkflowWorkspace() {
   const [maxExperiments, setMaxExperiments] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
+  const [targetJournal, setTargetJournal] = useState<JournalProfile | null>(null)
   const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
+  const [experimentContractVersion, setExperimentContractVersion] = useState<1 | 2>(1)
   const [inputPaths, setInputPaths] = useState<string[]>([''])
   const [inputPathsValid, setInputPathsValid] = useState(true)
   const [startError, setStartError] = useState<string | null>(null)
@@ -322,6 +327,7 @@ export function WorkflowWorkspace() {
   ) => {
     setStartingModule(moduleType)
     setExperimentMode('auto')
+    setExperimentContractVersion(1)
     setInputPaths([''])
     setInputPathsValid(true)
     setContinuationSource(sourceRun
@@ -440,6 +446,7 @@ export function WorkflowWorkspace() {
     if (startingModule === 'experiment') {
       if (!inputPathsValid) return
       moduleData.experiment_execution_mode = experimentMode
+      moduleData.experiment_contract_version = experimentContractVersion
       const paths = [...new Set(inputPaths.map((p) => p.trim()).filter(Boolean))]
       if (paths.length) moduleData.external_read_paths = paths
       const normalizedGoals: AutomationGoal[] = []
@@ -493,6 +500,7 @@ export function WorkflowWorkspace() {
       }
       const config = getExportConfig(deliveryFormat)
       moduleData.delivery_format = deliveryFormat
+      if (deliveryFormat === 'paper_article') Object.assign(moduleData, journalSelection(targetJournal))
       moduleData.output_path = config.outputPath
       moduleData.output_type = config.outputType
     }
@@ -521,7 +529,7 @@ export function WorkflowWorkspace() {
         lang,
       )
       const startPrompt = moduleType === 'delivery' && deliveryFormat && task
-        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true })}`
+        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true, targetJournal: targetJournal?.id })}`
         : buildModuleStartPrompt(moduleType, intent, moduleData, promptLanguage)
       useAgentStore.getState().addLog(conversationId, {
         id: `module-start-${Date.now()}`,
@@ -732,7 +740,10 @@ export function WorkflowWorkspace() {
 
               {startingModule === 'experiment' && (
                 <div className="mt-4 space-y-4">
-                  <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={creating !== null} />
+                  <div className="mt-4 grid grid-cols-2 gap-4">
+                    <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={creating !== null} />
+                    <ExperimentContractMode value={experimentContractVersion} onChange={setExperimentContractVersion} disabled={creating !== null} />
+                  </div>
                   <ExperimentInputPaths paths={inputPaths} onChange={setInputPaths} onValidChange={setInputPathsValid} disabled={creating !== null} />
                   <div>
                     <div className="flex items-center justify-between gap-3">
@@ -885,6 +896,7 @@ export function WorkflowWorkspace() {
                       )
                     })}
                   </div>
+                  {deliveryFormat === 'paper_article' && <JournalTargetSelect value={targetJournal} onChange={setTargetJournal} disabled={creating !== null} />}
                 </fieldset>
               )}
 
