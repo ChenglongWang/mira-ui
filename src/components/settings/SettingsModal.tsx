@@ -156,6 +156,9 @@ export function SettingsModal() {
   const [feedback, setFeedback] = useState<string | null>(null)
   const [feedbackError, setFeedbackError] = useState(false)
   const [workspaceEdited, setWorkspaceEdited] = useState(false)
+  // "Specify path manually" in the Remote-SSH install dialog lands here.
+  const miraCommandFocus = useRemoteSshStore((s) => s.miraCommandFocus)
+  const miraCommandRef = useRef<HTMLInputElement>(null)
 
   // Snapshot of the draft when the modal opened. A late background refresh
   // diffs against it so it never overwrites fields the user already changed.
@@ -236,6 +239,15 @@ export function SettingsModal() {
     if (store.deploymentMode === 'remoteSsh' && useRemoteSshStore.getState().status.phase !== 'connected') return
     void loadRuntimeConfig(store.deploymentMode, store.apiUrl, true, true)
   }, [settingsOpen])
+
+  useEffect(() => {
+    if (!settingsOpen || !miraCommandFocus) return
+    const timer = setTimeout(() => {
+      miraCommandRef.current?.scrollIntoView?.({ block: 'center' })
+      miraCommandRef.current?.focus()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [settingsOpen, miraCommandFocus])
 
   if (!settingsOpen) return null
 
@@ -400,6 +412,7 @@ export function SettingsModal() {
       return
     }
     resetWorkspaceScopedState()
+    store.setSshManuallyDisconnected(false)
     store.setDeploymentMode('remoteSsh')
     store.setSshHost(host)
     store.setSshMiraCommand(draft.sshMiraCommand)
@@ -414,6 +427,7 @@ export function SettingsModal() {
       setFeedback(t('sshHostRequired', curLang))
       return
     }
+    store.setSshManuallyDisconnected(false)
     if (!sameSshEngine(host)) {
       resetWorkspaceScopedState()
       store.setDeploymentMode('remoteSsh')
@@ -423,6 +437,16 @@ export function SettingsModal() {
     }
     store.setSshMiraCommand(draft.sshMiraCommand)
     useRemoteSshStore.getState().setStatus(await connectRemoteSsh(host, draft.sshMiraCommand))
+  }
+
+  // Remembered across launches: the app stays disconnected until Connect.
+  const handleSshDisconnect = async () => {
+    const host = store.sshHost.trim()
+    store.setSshManuallyDisconnected(true)
+    useRemoteSshStore.getState().setStatus(await disconnectRemoteSsh())
+    const message = t('sshStatusDisconnected', curLang, { host })
+    store.setEngineBootstrap({ status: 'unreachable', message, version: null })
+    store.setConnectionMessage(message)
   }
 
   const handleRepairEngine = async () => {
@@ -722,6 +746,8 @@ export function SettingsModal() {
                   </p>
                   <Label text={t('sshMiraCommandLabel', curLang)} className="mt-3" />
                   <input
+                    ref={miraCommandRef}
+                    aria-label={t('sshMiraCommandLabel', curLang)}
                     value={draft.sshMiraCommand}
                     autoComplete="off"
                     spellCheck={false}
@@ -744,7 +770,7 @@ export function SettingsModal() {
                         : t('sshConnect', curLang)}
                     </ActionButton>
                     {sameSshEngine(draft.sshHost.trim()) && remoteSshStatus.phase !== 'idle' && (
-                      <ActionButton disabled={busy} onClick={() => void disconnectRemoteSsh()}>
+                      <ActionButton disabled={busy} onClick={() => void handleSshDisconnect()}>
                         {t('sshDisconnect', curLang)}
                       </ActionButton>
                     )}
@@ -953,9 +979,16 @@ function RemoteSshStatusLine({ lang, host, active }: { lang: Language; host: str
     ? 'text-red-300'
     : status.phase === 'connected' ? 'text-[var(--color-text-secondary)]' : 'text-amber-300'
   return (
-    <p role="status" className={cn('mt-2 text-[11px] leading-relaxed break-words', tone)}>
-      {remoteSshMessage(status, lang, host, miraCommand)}
-    </p>
+    <>
+      <p role="status" className={cn('mt-2 text-[11px] leading-relaxed break-words', tone)}>
+        {remoteSshMessage(status, lang, host, miraCommand)}
+      </p>
+      {status.phase === 'connected' && status.miraPath && (
+        <p className="mt-1 text-[11px] font-mono break-all text-[var(--color-text-muted)]">
+          {t('sshUsingMira', lang, { path: status.miraPath })}
+        </p>
+      )}
+    </>
   )
 }
 
