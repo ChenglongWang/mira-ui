@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { TopBar } from './TopBar'
 import { StatusBar } from './StatusBar'
+import { TeamAdminBanner } from './TeamAdminBanner'
 import { PipelineProgress } from '@/components/pipeline/PipelineProgress'
 import { ProjectQueue } from '@/components/queue/ProjectQueue'
 import { ExperimentTimeline } from '@/components/experiment/ExperimentTimeline'
@@ -9,9 +10,13 @@ import { AgentPanel } from '@/components/agent/AgentPanel'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { SkillsPluginsModal } from '@/components/settings/SkillsPluginsModal'
 import { ProvidersPage } from '@/components/providers/ProvidersPage'
+import { TeamUsagePage } from '@/components/team/TeamUsagePage'
 import { NewProjectModal } from '@/components/project/NewProjectModal'
 import { UpdateBanner } from '@/components/update/UpdateBanner'
 import { LocalEngineUpdateModal } from '@/components/engine/LocalEngineUpdateModal'
+import { SshPromptDialog } from '@/components/settings/SshPromptDialog'
+import { RemoteInstallDialog } from '@/components/settings/RemoteInstallDialog'
+import { TeamServerLoginDialog } from '@/components/settings/TeamServerLoginDialog'
 import { FeedbackDialog } from '@/components/feedback/FeedbackDialog'
 import { useUiStore } from '@/stores/uiStore'
 import { useProjectStore } from '@/stores/projectStore'
@@ -156,6 +161,7 @@ export function AppLayout() {
   return (
     <div className="h-screen flex flex-col">
       <TopBar />
+      <TeamAdminBanner />
       <UpdateBanner />
       <PipelineProgress />
 
@@ -235,8 +241,12 @@ export function AppLayout() {
       <StatusBar />
       <SettingsModal />
       <LocalEngineUpdateModal />
+      <RemoteInstallDialog />
+      <SshPromptDialog />
+      <TeamServerLoginDialog />
       <SkillsPluginsModal />
       <ProvidersPage />
+      <TeamUsagePage />
       <NewProjectModal />
       <FeedbackDialog />
     </div>

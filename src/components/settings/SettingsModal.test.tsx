@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/services/desktop', () => ({
   bootstrapLocalEngine: vi.fn(),
@@ -38,6 +38,8 @@ import {
 import { useAgentStore } from '@/stores/agentStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { useRemoteSshStore } from '@/stores/remoteSshStore'
+import { IDLE_REMOTE_SSH_STATUS } from '@/services/remoteSsh'
 
 const initialSettingsState = useSettingsStore.getState()
 const initialProjectState = useProjectStore.getState()
@@ -142,7 +144,7 @@ describe('SettingsModal remote runtime config', () => {
     })
   })
 
-  it('no longer shows a separate Local Engine tab and exposes a Manage providers entry', async () => {
+  it('shows one tab per deployment mode and exposes a Manage providers entry', async () => {
     vi.mocked(fetchRuntimeConfig).mockResolvedValue(runtimePayload('/old/workspace', '/old/config.json'))
 
     openRemoteSettings('https://old.example/api', 'wss://old.example/ws', '/old/workspace')
@@ -152,9 +154,24 @@ describe('SettingsModal remote runtime config', () => {
       expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
     })
 
-    // The two-tab structure (with a "Local Engine" tab) is gone.
-    expect(screen.queryByRole('tab')).toBeNull()
-    expect(screen.queryByText('Local Engine')).toBeNull()
+    // Deployment modes are tabs; the active one is the saved mode and only its
+    // parameters are shown.
+    expect(screen.getByRole('tab', { name: /Direct URL/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tab', { name: 'Local' })).toHaveAttribute('aria-selected', 'false')
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('API URL')
+    expect(screen.queryByText('Repair service')).toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: 'Local' }))
+    expect(screen.getByRole('tab', { name: 'Local' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveTextContent('Phase:')
+    expect(screen.getByRole('tabpanel')).not.toHaveTextContent('API URL')
+    // Without the desktop bridges (browser build) only Local and Direct URL are
+    // offered; the legacy engine maintenance buttons are gone.
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual([
+      'Local', 'Direct URL(deprecated)',
+    ])
+    for (const legacy of ['Repair service', 'Run doctor', 'Upgrade local engine', 'Refresh config']) {
+      expect(screen.queryByRole('button', { name: legacy })).toBeNull()
+    }
     // Provider/runtime config is reachable via the Providers page entry point.
     expect(screen.getAllByText('Manage providers').length).toBeGreaterThan(0)
   })
@@ -182,6 +199,154 @@ describe('SettingsModal remote runtime config', () => {
     })
     await waitFor(() => {
       expect(useSettingsStore.getState().workspacePath).toBe('/changed/workspace')
+    })
+  })
+
+  it('warns when a remote engine is reached over plaintext http/ws', async () => {
+    vi.mocked(fetchRuntimeConfig).mockResolvedValue(runtimePayload('/old/workspace', '/old/config.json'))
+
+    openRemoteSettings('http://10.0.0.5:18790/api', 'ws://10.0.0.5:18790/ws', '/old/workspace')
+    render(<SettingsModal />)
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('Unencrypted connection')
+    expect(alert).toHaveTextContent('ssh -N -L 18791:127.0.0.1:18790 <user>@10.0.0.5')
+    expect(alert).toHaveTextContent('http://127.0.0.1:18791/api')
+  })
+
+  it('does not warn for TLS endpoints or loopback tunnels', async () => {
+    vi.mocked(fetchRuntimeConfig).mockResolvedValue(runtimePayload('/old/workspace', '/old/config.json'))
+
+    openRemoteSettings('https://old.example/api', 'wss://old.example/ws', '/old/workspace')
+    render(<SettingsModal />)
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled()
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    fireEvent.change(screen.getByDisplayValue('https://old.example/api'), {
+      target: { value: 'http://127.0.0.1:18791/api' },
+    })
+    fireEvent.change(screen.getByDisplayValue('wss://old.example/ws'), {
+      target: { value: 'ws://127.0.0.1:18791/ws' },
+    })
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    fireEvent.change(screen.getByDisplayValue('ws://127.0.0.1:18791/ws'), {
+      target: { value: 'ws://server.lab.example:18790/ws' },
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent('<user>@server.lab.example')
+  })
+
+  describe('Remote server (SSH)', () => {
+    beforeEach(() => {
+      useRemoteSshStore.setState({ status: IDLE_REMOTE_SSH_STATUS })
+      window.electronAPI = {
+        platform: 'darwin',
+        remoteSshConnect: vi.fn(async (host: string) => ({ phase: 'connecting' as const, host, localPort: null, version: null, error: null, attempt: 0, miraPath: null })),
+        remoteSshDisconnect: vi.fn(async () => IDLE_REMOTE_SSH_STATUS),
+        listSshHosts: vi.fn(async () => ['lab', 'gpu02']),
+      }
+    })
+    afterEach(() => { delete window.electronAPI })
+
+    it('switches to an SSH host from ~/.ssh/config without asking for URLs or tokens', async () => {
+      vi.mocked(fetchRuntimeConfig).mockResolvedValue(runtimePayload('/old/workspace', '/old/config.json'))
+      openRemoteSettings('https://old.example/api', 'wss://old.example/ws', '/old/workspace')
+      const { container } = render(<SettingsModal />)
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).not.toBeDisabled())
+
+      fireEvent.click(screen.getByRole('tab', { name: 'Remote server (SSH)' }))
+      expect(screen.queryByText('API URL')).toBeNull()
+      expect(screen.queryByText('Engine token')).toBeNull()
+      await waitFor(() => expect(container.querySelectorAll('#mira-ssh-hosts option')).toHaveLength(2))
+
+      fireEvent.change(screen.getByPlaceholderText('Alias from ~/.ssh/config, or user@host[:port]'), { target: { value: 'lab' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+
+      const state = useSettingsStore.getState()
+      expect(state.deploymentMode).toBe('remoteSsh')
+      expect(state.sshHost).toBe('lab')
+      expect(state.activeEngineKey).toBe('ssh:lab')
+    })
+
+    it('shows connection status and errors for the active host', async () => {
+      useSettingsStore.getState().setDeploymentMode('remoteSsh')
+      useSettingsStore.getState().setSshHost('lab')
+      useRemoteSshStore.setState({ status: {
+        phase: 'error', host: 'lab', localPort: null, version: null, attempt: 0, miraPath: null,
+        error: { code: 'not_installed', message: 'sh: 1: mira: not found' },
+      } })
+      useSettingsStore.getState().openSettings()
+      render(<SettingsModal />)
+
+      expect(await screen.findByRole('status')).toHaveTextContent('Mira was not found on lab')
+      expect(fetchRuntimeConfig).not.toHaveBeenCalled()
+
+      // Point the host at a mira outside the login-shell PATH and retry.
+      fireEvent.change(screen.getByPlaceholderText('mira'), { target: { value: '/opt/mira/bin/mira' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }))
+      await waitFor(() => expect(window.electronAPI?.remoteSshConnect).toHaveBeenCalledWith('lab', '/opt/mira/bin/mira'))
+      expect(useSettingsStore.getState().engineProfiles['ssh:lab'].sshMiraCommand).toBe('/opt/mira/bin/mira')
+      expect(await screen.findByRole('status')).toHaveTextContent('Connecting to lab over SSH')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
+      expect(window.electronAPI?.remoteSshDisconnect).toHaveBeenCalled()
+    })
+
+    it('remembers a manual disconnect until the user connects again', async () => {
+      vi.mocked(fetchRuntimeConfig).mockResolvedValue(runtimePayload('/home/ana/mira', '/home/ana/.mira/config.json'))
+      useSettingsStore.getState().setDeploymentMode('remoteSsh')
+      useSettingsStore.getState().setSshHost('lab')
+      useSettingsStore.getState().setSshManuallyDisconnected(false)
+      useRemoteSshStore.setState({ status: {
+        ...IDLE_REMOTE_SSH_STATUS, phase: 'connected', host: 'lab', localPort: 51000, version: '0.5.0',
+      } })
+      useSettingsStore.getState().openSettings()
+      render(<SettingsModal />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+      await waitFor(() => expect(useSettingsStore.getState().sshManuallyDisconnected).toBe(true))
+      expect(window.electronAPI?.remoteSshDisconnect).toHaveBeenCalled()
+      await waitFor(() => expect(useSettingsStore.getState().engineStatus).toBe('unreachable'))
+      expect(useSettingsStore.getState().connectionMessage).toContain('Disconnected from lab')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+      expect(useSettingsStore.getState().sshManuallyDisconnected).toBe(false)
+      await waitFor(() => expect(vi.mocked(window.electronAPI!.remoteSshConnect!).mock.calls.at(-1)?.[0]).toBe('lab'))
+    })
+
+    it('focuses the remote mira command when the install dialog asks for a manual path', async () => {
+      useSettingsStore.getState().setDeploymentMode('remoteSsh')
+      useSettingsStore.getState().setSshHost('lab')
+      render(<SettingsModal />)
+      act(() => {
+        useRemoteSshStore.getState().requestMiraCommandFocus()
+        useSettingsStore.getState().openSettings()
+      })
+      const field = await screen.findByLabelText('Remote mira command')
+      await waitFor(() => expect(document.activeElement).toBe(field))
+    })
+
+    it('shows which remote mira the connection uses', async () => {
+      useSettingsStore.getState().setDeploymentMode('remoteSsh')
+      useSettingsStore.getState().setSshHost('lab')
+      useRemoteSshStore.setState({ status: {
+        ...IDLE_REMOTE_SSH_STATUS, phase: 'connected', host: 'lab', localPort: 51000, version: '0.5.0', miraPath: '/home/ana/.mira/bin/mira',
+      } })
+      useSettingsStore.getState().openSettings()
+      render(<SettingsModal />)
+      expect(await screen.findByText('Server mira: /home/ana/.mira/bin/mira')).toBeInTheDocument()
+    })
+
+    it('requires a host to save', async () => {
+      useSettingsStore.getState().setDeploymentMode('remoteSsh')
+      useSettingsStore.getState().setSshHost('')
+      useSettingsStore.getState().openSettings()
+      render(<SettingsModal />)
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText('Enter an SSH host in Settings → Connection.')).toBeInTheDocument()
+      expect(useSettingsStore.getState().settingsOpen).toBe(true)
     })
   })
 })

@@ -8,6 +8,10 @@ import { cn } from '@/lib/utils'
 import { useChatStore } from '@/stores/chatStore'
 import { SkillHistoryChip } from './SkillHistoryChip'
 import { useTokenUsageStore, type TokenUsage } from '@/stores/tokenUsageStore'
+import { TeamServerUserMenu } from './TeamServerUserMenu'
+import { requestTeamServerLogin, useTeamServerStore } from '@/stores/teamServerStore'
+import { teamServerEngineIssueMessage } from '@/services/teamServer'
+import { serverHost, serverOrigin } from '@/lib/teamServerUrl'
 
 const SYSTEM_MESSAGE_TICK_MS = 500
 
@@ -38,17 +42,31 @@ export function StatusBar() {
     if (connected && skillSessionId) void loadUsage(skillSessionId)
   }, [connected, skillSessionId, workspace, apiUrl, loadUsage])
 
+  const serverUrl = useSettingsStore((s) => s.serverUrl)
+  const teamOrigin = deploymentMode === 'teamServer' ? serverOrigin(serverUrl) : null
+  const teamStarting = useTeamServerStore((s) => s.startingRequests > 0)
+  const teamIssue = useTeamServerStore((s) => s.engineIssue)
   const authMessage = engineAuthRejected
-    ? t(deploymentMode === 'remoteManual' ? 'engineTokenRejectedRemote' : 'engineTokenRejectedDesktop', lang)
+    ? teamOrigin
+      ? t('teamServerSessionExpired', lang, { host: serverHost(teamOrigin) })
+      : t(deploymentMode === 'remoteManual'
+        ? 'engineTokenRejectedRemote'
+        : deploymentMode === 'remoteSsh' ? 'engineTokenRejectedSsh' : 'engineTokenRejectedDesktop', lang)
     : null
-  const bannerMessage = authMessage || connectionMessage || engineMessage
-  const showEngineWarning = Boolean(authMessage) || (Boolean(bannerMessage) && (
+  // Team server: Mira Server is starting the engine, or cannot right now.
+  const teamMessage = teamOrigin
+    ? teamStarting
+      ? t('teamServerEngineStarting', lang, { host: serverHost(teamOrigin) })
+      : teamIssue ? teamServerEngineIssueMessage(teamIssue.code, lang, teamOrigin, teamIssue.message) : null
+    : null
+  const bannerMessage = authMessage || teamMessage || connectionMessage || engineMessage
+  const showEngineWarning = Boolean(authMessage) || Boolean(teamMessage) || (Boolean(bannerMessage) && (
     engineStatus === 'incompatible'
       || engineStatus === 'unreachable'
       || engineStatus === 'setup_required'
       || localEnginePhase === 'error'
       || !connected
-      || deploymentMode === 'remoteManual'
+      || deploymentMode !== 'localBundle'
   ))
 
   const engineLabel = useMemo(() => {
@@ -64,10 +82,15 @@ export function StatusBar() {
   return (
     <footer className="border-t border-[var(--color-border)] bg-[var(--color-bg-primary)]">
       {showEngineWarning && (
-        <div className="px-6 py-2 text-xs text-amber-300 bg-amber-950/40 border-b border-amber-500/30">
+        <div className="px-6 py-2 text-xs text-[var(--color-notice-text)] bg-[var(--color-notice-bg)] border-b border-[var(--color-notice-border)]">
           {bannerMessage || t('engineWarningFallback', lang)}
-          {authMessage && (
-            <button type="button" onClick={openSettings} className="ml-2 underline hover:text-amber-200">
+          {authMessage && teamOrigin && (
+            <button type="button" onClick={() => void requestTeamServerLogin(teamOrigin, 'manual')} className="ml-2 underline hover:opacity-80">
+              {t('teamServerSignIn', lang)}
+            </button>
+          )}
+          {authMessage && !teamOrigin && (
+            <button type="button" onClick={openSettings} className="ml-2 underline hover:opacity-80">
               {t('engineTokenOpenSettings', lang)}
             </button>
           )}
@@ -80,6 +103,7 @@ export function StatusBar() {
         <SystemMessageSlot />
 
         <div className="flex items-stretch gap-0.5 shrink-0">
+          <TeamServerUserMenu />
           <EngineChip
             label={engineChipLabel}
             status={engineStatus}
@@ -245,6 +269,11 @@ function TokenChip({
     && cacheReported === snapshot.calls && snapshot.unreported_calls === 0)
   const cachedLabel = snapshot && (cacheComplete || snapshot.cached_tokens > 0)
     ? `${cacheComplete ? '' : '≥ '}${snapshot.cached_tokens.toLocaleString()}` : unknownLabel
+  // Exact when every call reported its cache reads; otherwise an upper bound
+  // (calls without cache details may have hit the cache too), as long as the
+  // input itself is complete.
+  const uncachedLabel = snapshot && (cacheComplete || (snapshot.calls > 0 && snapshot.unreported_calls === 0))
+    ? `${cacheComplete ? '' : '≤ '}${(snapshot.input_tokens - snapshot.cached_tokens).toLocaleString()}` : unknownLabel
 
   useEffect(() => {
     if (!open) return
@@ -306,8 +335,7 @@ function TokenChip({
                 [zh ? '输入 token' : 'Input tokens', `${snapshot.unreported_calls ? '≥ ' : ''}${snapshot.input_tokens.toLocaleString()}`],
                 [zh ? '输出 token' : 'Output tokens', `${snapshot.unreported_calls ? '≥ ' : ''}${snapshot.output_tokens.toLocaleString()}`],
                 [zh ? '缓存命中 token（包含在输入中）' : 'Cache-read tokens (part of input)', cachedLabel],
-                [zh ? '未命中缓存的输入 token' : 'Input tokens not served from cache', cacheComplete ? (snapshot.input_tokens - snapshot.cached_tokens).toLocaleString() : unknownLabel],
-                [zh ? '缓存命中率（按输入 token）' : 'Cache hit rate (input tokens)', cacheComplete && snapshot.input_tokens > 0 ? `${(snapshot.cached_tokens / snapshot.input_tokens * 100).toFixed(1)}%` : '—'],
+                [zh ? '未命中缓存的输入 token' : 'Input tokens not served from cache', uncachedLabel],
                 [zh ? '模型调用次数' : 'Model calls', snapshot.calls.toLocaleString()],
                 [zh ? '有缓存明细的调用' : 'Calls reporting cache usage', `${cacheReported} / ${snapshot.calls}`],
                 [zh ? '未返回用量的调用' : 'Calls missing token usage', snapshot.unreported_calls.toLocaleString()],
@@ -316,8 +344,8 @@ function TokenChip({
               </div>)}
             </dl>
             {!cacheComplete && snapshot.calls > 0 && <p className="text-amber-500">{zh
-              ? '部分或全部调用缺少缓存明细（含旧版记录）。未知不代表未命中；已知缓存量仅为下限，不能推算完整命中率。'
-              : 'Some or all calls lack cache details (including older records). Unknown does not mean a cache miss; known cache reads are only a lower bound.'}</p>}
+              ? '部分或全部调用缺少缓存明细（含旧版记录）。未知不代表未命中：缓存命中 token 仅为下限（≥），未命中缓存的输入 token 仅为上限（≤）。'
+              : 'Some or all calls lack cache details (including older records). Unknown does not mean a cache miss: cache reads are only a lower bound (≥), and input not served from cache an upper bound (≤).'}</p>}
             {snapshot.unreported_calls > 0 && <p className="text-amber-500">{zh ? '部分调用未返回 token 用量，累计统计不完整。' : 'Some calls did not return token usage; totals are incomplete.'}</p>}
           </> : <p>{zh ? '详细用量尚不可用。旧版统计仅提供总量，请连接支持明细的 engine。' : 'Detailed usage is unavailable. Legacy counters only provide totals; connect to an engine supporting details.'}</p>}
           <p className="text-[var(--color-text-muted)]">{zh

@@ -1,12 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
 import { engineTokenOrigin, useSettingsStore, type DeploymentMode, type Theme, type Language, type SendShortcut } from '@/stores/settingsStore'
-import {
-  bootstrapLocalEngine,
-  doctorLocalEngine,
-  hasDesktopEngineManager,
-  repairLocalEngineService,
-  upgradeLocalEngine,
-} from '@/services/desktop'
 import { probeEngineCompatibility } from '@/services/engine'
 import {
   fetchRuntimeConfig,
@@ -21,6 +14,19 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useUiStore } from '@/stores/uiStore'
 import { EngineLifecycleControls } from './EngineLifecycleControls'
 import { exportDiagnostics, recordDiagnostic } from '@/services/diagnostics'
+import { isUnencryptedRemoteEndpoint, sshTunnelSuggestion } from '@/lib/connectionSecurity'
+import { connectRemoteSsh, disconnectRemoteSsh, hasRemoteSshBridge, listSshHosts } from '@/services/remoteSsh'
+import { useRemoteSshStore } from '@/stores/remoteSshStore'
+import { remoteSshMessage } from '@/lib/remoteSshMessages'
+import { parseServerUrl, serverHost, serverOrigin } from '@/lib/teamServerUrl'
+import {
+  fetchTeamServerInfo,
+  hasTeamServerBridge,
+  serverUrlErrorMessage,
+  signOutTeamServer,
+  teamServerFailureMessage,
+} from '@/services/teamServer'
+import { requestTeamServerLogin, useTeamServerStore } from '@/stores/teamServerStore'
 
 const LOCAL_API_URL = 'http://127.0.0.1:18790/api'
 const LOCAL_WS_URL = 'ws://127.0.0.1:18790/ws'
@@ -33,6 +39,9 @@ type SettingsDraft = {
   apiUrl: string
   wsUrl: string
   engineToken: string
+  sshHost: string
+  sshMiraCommand: string
+  serverUrl: string
   showProgressMessages: boolean
   showToolCallHistory: boolean
   streamResponses: boolean
@@ -67,6 +76,9 @@ function createDraft(store: ReturnType<typeof useSettingsStore.getState>): Setti
     apiUrl: store.apiUrl,
     wsUrl: store.wsUrl,
     engineToken: storedEngineToken(store, store.apiUrl),
+    sshHost: store.sshHost ?? '',
+    sshMiraCommand: store.sshMiraCommand ?? '',
+    serverUrl: store.serverUrl ?? '',
     showProgressMessages: store.showProgressMessages,
     showToolCallHistory: store.showToolCallHistory ?? false,
     streamResponses: store.streamResponses ?? true,
@@ -137,6 +149,8 @@ function latestStoredProfile(
 export function SettingsModal() {
   const store = useSettingsStore()
   const { settingsOpen, closeSettings } = store
+  const remoteSshStatus = useRemoteSshStore((s) => s.status)
+  const [sshHosts, setSshHosts] = useState<string[]>([])
   const openProviders = useUiStore((s) => s.openProviders)
   const showEngineWarning = store.engineStatus === 'incompatible' || store.engineStatus === 'unreachable' || store.engineStatus === 'setup_required' || store.localEnginePhase === 'error'
 
@@ -146,6 +160,10 @@ export function SettingsModal() {
   const [feedback, setFeedback] = useState<string | null>(null)
   const [feedbackError, setFeedbackError] = useState(false)
   const [workspaceEdited, setWorkspaceEdited] = useState(false)
+  const [diagnosticsFeedback, setDiagnosticsFeedback] = useState<{ message: string; error: boolean } | null>(null)
+  // "Specify path manually" in the Remote-SSH install dialog lands here.
+  const miraCommandFocus = useRemoteSshStore((s) => s.miraCommandFocus)
+  const miraCommandRef = useRef<HTMLInputElement>(null)
 
   // Snapshot of the draft when the modal opened. A late background refresh
   // diffs against it so it never overwrites fields the user already changed.
@@ -220,14 +238,52 @@ export function SettingsModal() {
     setRuntimeLoading(false)
     setFeedbackError(false)
     setFeedback(null)
+    setDiagnosticsFeedback(null)
     setWorkspaceEdited(false)
+    if (hasRemoteSshBridge()) void listSshHosts().then(setSshHosts)
+    // A Remote-SSH engine is only reachable while its tunnel is up.
+    if (store.deploymentMode === 'remoteSsh' && useRemoteSshStore.getState().status.phase !== 'connected') return
+    // A Team server engine is only reachable while signed in.
+    if (store.deploymentMode === 'teamServer' && useTeamServerStore.getState().phase !== 'signedIn') return
     void loadRuntimeConfig(store.deploymentMode, store.apiUrl, true, true)
   }, [settingsOpen])
+
+  useEffect(() => {
+    if (!settingsOpen || !miraCommandFocus) return
+    const timer = setTimeout(() => {
+      miraCommandRef.current?.scrollIntoView?.({ block: 'center' })
+      miraCommandRef.current?.focus()
+    }, 0)
+    return () => clearTimeout(timer)
+  }, [settingsOpen, miraCommandFocus])
 
   if (!settingsOpen) return null
 
   const handleSwitchMode = (mode: DeploymentMode) => {
     if (busy) return
+    if (mode === 'teamServer') {
+      const storedServer = latestStoredProfile(store.engineProfiles, 'teamServer')
+      setDraft((current) => ({
+        ...current,
+        deploymentMode: mode,
+        serverUrl: current.serverUrl || store.serverUrl || storedServer?.serverUrl || '',
+        workspacePath: storedServer?.workspacePath ?? current.workspacePath,
+      }))
+      setWorkspaceEdited(false)
+      return
+    }
+    if (mode === 'remoteSsh') {
+      const storedSsh = latestStoredProfile(store.engineProfiles, 'remoteSsh')
+      setDraft((current) => ({
+        ...current,
+        deploymentMode: mode,
+        sshHost: current.sshHost || store.sshHost || storedSsh?.sshHost || '',
+        sshMiraCommand: current.sshMiraCommand || store.sshMiraCommand || storedSsh?.sshMiraCommand || '',
+        workspacePath: storedSsh?.workspacePath ?? current.workspacePath,
+      }))
+      setWorkspaceEdited(false)
+      return
+    }
     const storedRemote = mode === 'remoteManual'
       ? latestStoredProfile(store.engineProfiles, 'remoteManual')
       : null
@@ -243,10 +299,10 @@ export function SettingsModal() {
         deploymentMode: mode,
         apiUrl: mode === 'localBundle'
           ? LOCAL_API_URL
-          : storedRemote?.apiUrl ?? (current.apiUrl === LOCAL_API_URL ? remoteApiFallback() : current.apiUrl),
+          : storedRemote?.apiUrl ?? (current.apiUrl === LOCAL_API_URL || current.deploymentMode === 'teamServer' ? remoteApiFallback() : current.apiUrl),
         wsUrl: mode === 'localBundle'
           ? LOCAL_WS_URL
-          : storedRemote?.wsUrl ?? (current.wsUrl === LOCAL_WS_URL ? remoteWsFallback() : current.wsUrl),
+          : storedRemote?.wsUrl ?? (current.wsUrl === LOCAL_WS_URL || current.deploymentMode === 'teamServer' ? remoteWsFallback() : current.wsUrl),
         workspacePath: storedRemote?.workspacePath ?? base.workspacePath,
         engineToken: mode === 'localBundle'
           ? current.engineToken
@@ -279,6 +335,18 @@ export function SettingsModal() {
       store.setStreamResponses(draft.streamResponses)
       store.setSendShortcut(draft.sendShortcut)
       store.setReceivePrereleases(draft.receivePrereleases)
+
+      if (draft.deploymentMode === 'remoteSsh') {
+        await saveRemoteSsh(nextWorkspacePath)
+        closeSettings()
+        return
+      }
+
+      if (draft.deploymentMode === 'teamServer') {
+        await saveTeamServer(nextWorkspacePath)
+        closeSettings()
+        return
+      }
 
       if (!local && (!nextApiUrl || !nextWsUrl)) {
         throw new Error(t('settingsRemoteRequiresUrls', curLang))
@@ -347,115 +415,153 @@ export function SettingsModal() {
     }
   }
 
-  const handleRepairEngine = async () => {
-    setBusy(true)
-    setFeedbackError(false)
-    setFeedback('Repairing local engine service...')
-    try {
-      const localState = await repairLocalEngineService()
-      if (!localState) {
-        throw new Error('Desktop engine manager is unavailable.')
+  const sameSshEngine = (host: string) => store.deploymentMode === 'remoteSsh' && store.sshHost.trim() === host
+
+  // Switching to (or between) Remote-SSH hosts only updates settings; the
+  // connection itself is driven by useWebSocket. The workspace root can only
+  // be moved on an engine that is connected right now.
+  const saveRemoteSsh = async (nextWorkspacePath: string) => {
+    const host = draft.sshHost.trim()
+    if (!host) throw new Error(t('sshHostRequired', curLang))
+    if (sameSshEngine(host)) {
+      // A new remote command reconnects (useWebSocket re-runs attach).
+      store.setSshMiraCommand(draft.sshMiraCommand)
+      const connected = remoteSshStatus.phase === 'connected' && remoteSshStatus.host === host
+      if (connected && workspaceEdited && customProjectDirsAllowed
+        && workspacePathChanged(store.workspacePath, nextWorkspacePath)) {
+        const payload = await updateProjectsRoot(nextWorkspacePath, store.apiUrl)
+        resetWorkspaceScopedState()
+        store.setRuntimeConfig(payload)
+        await useProjectStore.getState().loadProjects({ replaceMissing: true, refreshAll: true })
       }
-      store.setLocalEngineBootstrap({
-        phase: localState.phase,
-        message: localState.message,
-        executablePath: localState.executablePath,
-        version: localState.version,
-        operation: localState.operation,
-      })
-      const probe = await probeEngineCompatibility(LOCAL_API_URL)
-      store.setEngineBootstrap({
-        status: probe.status,
-        message: probe.status === 'compatible' ? null : probe.message,
-        version: probe.version,
-        uptimeSeconds: probe.uptimeSeconds,
-      })
-      setFeedback(probe.status === 'compatible' ? 'Local engine service repaired and verified.' : probe.message)
-      setFeedbackError(probe.status !== 'compatible')
-    } catch (error) {
+      return
+    }
+    resetWorkspaceScopedState()
+    store.setSshManuallyDisconnected(false)
+    store.setDeploymentMode('remoteSsh')
+    store.setSshHost(host)
+    store.setSshMiraCommand(draft.sshMiraCommand)
+  }
+
+  const sameTeamServer = (origin: string) => store.deploymentMode === 'teamServer' && store.serverUrl === origin
+
+  // Switching to (or between) Team servers checks the URL and updates
+  // settings; useWebSocket then signs in silently with a stored session, or
+  // shows "Signed out" until the user clicks Sign in.
+  const saveTeamServer = async (nextWorkspacePath: string) => {
+    const parsed = parseServerUrl(draft.serverUrl)
+    if (!parsed.ok) throw new Error(serverUrlErrorMessage(parsed.error, curLang))
+    if (sameTeamServer(parsed.origin)) {
+      const signedIn = useTeamServerStore.getState().phase === 'signedIn' && store.engineStatus === 'compatible'
+      if (signedIn && workspaceEdited && customProjectDirsAllowed
+        && workspacePathChanged(store.workspacePath, nextWorkspacePath)) {
+        const payload = await updateProjectsRoot(nextWorkspacePath, store.apiUrl)
+        resetWorkspaceScopedState()
+        store.setRuntimeConfig(payload)
+        await useProjectStore.getState().loadProjects({ replaceMissing: true, refreshAll: true })
+      }
+      return
+    }
+    const info = await fetchTeamServerInfo(parsed.origin)
+    if (!info.ok) throw new Error(teamServerFailureMessage(info, curLang, parsed.origin))
+    resetWorkspaceScopedState()
+    store.setTeamServer(parsed.origin)
+  }
+
+  const handleTeamServerSignIn = async () => {
+    setFeedback(null)
+    setFeedbackError(false)
+    const parsed = parseServerUrl(draft.serverUrl)
+    if (!parsed.ok) {
       setFeedbackError(true)
-      setFeedback(error instanceof Error ? error.message : String(error))
+      setFeedback(serverUrlErrorMessage(parsed.error, curLang))
+      return
+    }
+    setBusy(true)
+    setFeedback(t('teamServerChecking', curLang, { host: parsed.host }))
+    try {
+      const info = await fetchTeamServerInfo(parsed.origin)
+      if (!info.ok) {
+        setFeedbackError(true)
+        setFeedback(teamServerFailureMessage(info, curLang, parsed.origin))
+        return
+      }
+      setFeedback(null)
+      setDraft((current) => ({ ...current, serverUrl: parsed.origin }))
+      if (!(await requestTeamServerLogin(parsed.origin, 'settings'))) return
+      if (!sameTeamServer(parsed.origin)) {
+        resetWorkspaceScopedState()
+        store.setTeamServer(parsed.origin)
+      }
     } finally {
       setBusy(false)
     }
   }
 
-  const handleDoctorEngine = async () => {
+  const handleTeamServerSignOut = async () => {
+    const origin = serverOrigin(store.serverUrl)
+    if (!origin) return
     setBusy(true)
-    setFeedbackError(false)
-    setFeedback('Collecting local engine diagnostics...')
     try {
-      const result = await doctorLocalEngine()
-      if (!result?.ok) {
-        throw new Error(result?.stderr || 'Local engine doctor failed.')
-      }
-      setFeedback(result.stdout || 'Local engine diagnostics completed.')
-    } catch (error) {
-      setFeedbackError(true)
-      setFeedback(error instanceof Error ? error.message : String(error))
+      await signOutTeamServer(origin)
     } finally {
       setBusy(false)
     }
+  }
+
+  const handleSshConnect = async () => {
+    const host = draft.sshHost.trim()
+    setFeedback(null)
+    setFeedbackError(false)
+    if (!host) {
+      setFeedbackError(true)
+      setFeedback(t('sshHostRequired', curLang))
+      return
+    }
+    store.setSshManuallyDisconnected(false)
+    if (!sameSshEngine(host)) {
+      resetWorkspaceScopedState()
+      store.setDeploymentMode('remoteSsh')
+      store.setSshHost(host)
+      store.setSshMiraCommand(draft.sshMiraCommand)
+      return
+    }
+    store.setSshMiraCommand(draft.sshMiraCommand)
+    useRemoteSshStore.getState().setStatus(await connectRemoteSsh(host, draft.sshMiraCommand))
+  }
+
+  // Remembered across launches: the app stays disconnected until Connect.
+  const handleSshDisconnect = async () => {
+    const host = store.sshHost.trim()
+    store.setSshManuallyDisconnected(true)
+    useRemoteSshStore.getState().setStatus(await disconnectRemoteSsh())
+    const message = t('sshStatusDisconnected', curLang, { host })
+    store.setEngineBootstrap({ status: 'unreachable', message, version: null })
+    store.setConnectionMessage(message)
   }
 
   const handleExportDiagnostics = async () => {
     setBusy(true)
-    setFeedbackError(false)
-    setFeedback(null)
+    setDiagnosticsFeedback(null)
     try {
       const file = await exportDiagnostics(localMode)
-      if (file) setFeedback(t('diagnosticsExported', curLang))
+      if (file) setDiagnosticsFeedback({ message: t('diagnosticsExported', curLang), error: false })
     } catch (error) {
       recordDiagnostic('diagnostics.export_failed', {}, error)
-      setFeedbackError(true)
-      setFeedback(t('diagnosticsExportFailed', curLang))
+      setDiagnosticsFeedback({ message: t('diagnosticsExportFailed', curLang), error: true })
     } finally { setBusy(false) }
   }
 
-  const handleUpgradeEngine = async () => {
-    setBusy(true)
-    setFeedbackError(false)
-    setFeedback('Upgrading local engine...')
-    try {
-      const result = await upgradeLocalEngine('mira-engine')
-      if (!result?.ok) {
-        throw new Error(result?.stderr || 'Local engine upgrade failed.')
-      }
-      const localState = await bootstrapLocalEngine()
-      if (localState) {
-        store.setLocalEngineBootstrap({
-          phase: localState.phase,
-          message: localState.message,
-          executablePath: localState.executablePath,
-          version: localState.version,
-          operation: localState.operation,
-        })
-      }
-      const probe = await probeEngineCompatibility(LOCAL_API_URL)
-      store.setEngineBootstrap({
-        status: probe.status,
-        message: probe.status === 'compatible' ? null : probe.message,
-        version: probe.version,
-        uptimeSeconds: probe.uptimeSeconds,
-      })
-      if (probe.status !== 'compatible') {
-        throw new Error(probe.message)
-      }
-      setFeedback('Local engine upgraded and verified.')
-    } catch (error) {
-      setFeedbackError(true)
-      setFeedback(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
-    }
-  }
-
   const localMode = draft.deploymentMode === 'localBundle'
+  const sshMode = draft.deploymentMode === 'remoteSsh'
+  const directMode = draft.deploymentMode === 'remoteManual'
+  const teamMode = draft.deploymentMode === 'teamServer'
+  const draftServerOrigin = serverOrigin(draft.serverUrl)
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center">
       <div className="absolute inset-0 bg-[var(--color-overlay)]" />
-      <div className="relative w-[620px] max-h-[84vh] rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-2xl flex flex-col overflow-hidden">
+      <div className="relative w-[680px] max-w-[calc(100vw-32px)] max-h-[84vh] rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-secondary)] shadow-2xl flex flex-col overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border)]">
           <h2 className="text-base font-semibold text-[var(--color-text-primary)]">
             {t('settings', curLang)}
@@ -469,259 +575,333 @@ export function SettingsModal() {
           </button>
         </div>
         <div className="flex-1 overflow-y-auto px-6 py-5 space-y-6">
-            <div className="space-y-6">
-              <Section title="Deployment">
-                <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-[var(--color-text-primary)]">Deployment Mode</p>
-                      <p className="text-[11px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
-                        {localMode
-                          ? 'Bundle mode keeps MIRA and mira-engine on this machine, and starts the local engine automatically.'
-                          : 'Remote mode only connects to an already-deployed mira endpoint. Install mira separately on the remote server.'}
+          <Section title={t('connection', curLang)}>
+            <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] overflow-hidden">
+              <DeploymentModeTabs mode={draft.deploymentMode} onChange={handleSwitchMode} lang={curLang} />
+              <div
+                role="tabpanel"
+                id={deploymentPanelId}
+                aria-labelledby={deploymentTabId(draft.deploymentMode)}
+                className="px-4 py-4"
+              >
+                <p className="text-[11px] text-[var(--color-text-muted)] leading-relaxed">
+                  {t(localMode ? 'deploymentLocalHint' : sshMode ? 'deploymentSshHint' : teamMode ? 'deploymentTeamServerHint' : 'deploymentDirectHint', curLang)}
+                </p>
+
+                {localMode && (
+                  <div className="mt-4">
+                    <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3 py-3 space-y-1">
+                      <p className="text-sm text-[var(--color-text-primary)]">
+                        Phase: <span className="font-medium">{store.localEnginePhase}</span>
                       </p>
+                      <p className="text-xs text-[var(--color-text-muted)]">
+                        {store.engineVersion ? `Version ${store.engineVersion}` : 'Version unknown'}
+                      </p>
+                      {store.localEngineExecutablePath && (
+                        <p className="text-[11px] text-[var(--color-text-muted)] break-all">
+                          Executable: {store.localEngineExecutablePath}
+                        </p>
+                      )}
+                      {showEngineWarning && (
+                        <p className="text-[11px] text-amber-300 leading-relaxed">
+                          {store.engineMessage || 'Local engine needs provider setup or an engine update.'}
+                        </p>
+                      )}
+                      {store.runtimeConfig?.config_path && (
+                        <p className="text-[11px] text-[var(--color-text-muted)] break-all">
+                          Runtime config path: {store.runtimeConfig.config_path}
+                        </p>
+                      )}
                     </div>
-                    <DeploymentModeSwitch mode={draft.deploymentMode} onChange={handleSwitchMode} />
+                    <EngineLifecycleControls busy={busy || runtimeLoading} onBusyChange={setBusy} />
                   </div>
-                </div>
-              </Section>
+                )}
 
-              <Section title={t('manageProviders', curLang)}>
-                <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-3">
-                  <div className="flex items-center justify-between gap-4">
-                    <p className="text-[11px] text-[var(--color-text-muted)] leading-relaxed flex-1">
-                      {t('settingsProvidersHint', curLang)}
+                {sshMode && (
+                  <div className="mt-4">
+                    <Label text={t('sshHostLabel', curLang)} />
+                    <input
+                      value={draft.sshHost}
+                      list="mira-ssh-hosts"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder={t('sshHostPlaceholder', curLang)}
+                      onChange={(e) => setDraft((current) => ({ ...current, sshHost: e.target.value }))}
+                      className={inputClass}
+                    />
+                    <datalist id="mira-ssh-hosts">
+                      {sshHosts.map((host) => <option key={host} value={host} />)}
+                    </datalist>
+                    <p className="text-[11px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
+                      {t('sshHostHint', curLang)}
                     </p>
-                    <ActionButton
-                      onClick={() => {
-                        closeSettings()
-                        openProviders()
-                      }}
-                    >
-                      {t('manageProviders', curLang)}
-                    </ActionButton>
+                    <Label text={t('sshMiraCommandLabel', curLang)} className="mt-3" />
+                    <input
+                      ref={miraCommandRef}
+                      aria-label={t('sshMiraCommandLabel', curLang)}
+                      value={draft.sshMiraCommand}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="mira"
+                      onChange={(e) => setDraft((current) => ({ ...current, sshMiraCommand: e.target.value }))}
+                      className={inputClass}
+                    />
+                    <p className="text-[11px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
+                      {t('sshMiraCommandHint', curLang)}
+                    </p>
+                    <RemoteSshStatusLine
+                      lang={curLang}
+                      host={draft.sshHost.trim()}
+                      active={sameSshEngine(draft.sshHost.trim())}
+                    />
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <ActionButton disabled={busy || !draft.sshHost.trim()} onClick={() => void handleSshConnect()}>
+                        {sameSshEngine(draft.sshHost.trim()) && remoteSshStatus.phase === 'error'
+                          ? t('sshReconnect', curLang)
+                          : t('sshConnect', curLang)}
+                      </ActionButton>
+                      {sameSshEngine(draft.sshHost.trim()) && remoteSshStatus.phase !== 'idle' && (
+                        <ActionButton disabled={busy} onClick={() => void handleSshDisconnect()}>
+                          {t('sshDisconnect', curLang)}
+                        </ActionButton>
+                      )}
+                    </div>
                   </div>
-                </div>
-              </Section>
+                )}
 
-              <Section title={t('workspace', curLang)}>
-                <Label text={t('workspacePath', curLang)} />
-                <input
-                  value={draft.workspacePath}
-                  onChange={(e) => {
-                    setWorkspaceEdited(true)
-                    setDraft((current) => ({ ...current, workspacePath: e.target.value }))
+                {teamMode && (
+                  <div className="mt-4">
+                    <Label text={t('teamServerUrlLabel', curLang)} />
+                    <input
+                      aria-label={t('teamServerUrlLabel', curLang)}
+                      value={draft.serverUrl}
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder={t('teamServerUrlPlaceholder', curLang)}
+                      onChange={(e) => setDraft((current) => ({ ...current, serverUrl: e.target.value }))}
+                      className={inputClass}
+                    />
+                    <p className="text-[11px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
+                      {t('teamServerUrlHint', curLang)}
+                    </p>
+                    <TeamServerStatusLine
+                      lang={curLang}
+                      origin={draftServerOrigin}
+                      active={draftServerOrigin !== null && sameTeamServer(draftServerOrigin)}
+                    />
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <ActionButton disabled={busy || !draft.serverUrl.trim()} onClick={() => void handleTeamServerSignIn()}>
+                        {t('teamServerSignIn', curLang)}
+                      </ActionButton>
+                      {draftServerOrigin && sameTeamServer(draftServerOrigin) && (
+                        <TeamServerSignOutButton disabled={busy} lang={curLang} origin={draftServerOrigin} onClick={() => void handleTeamServerSignOut()} />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {directMode && (
+                  <div className="mt-4">
+                    <Label text={t('apiUrl', curLang)} />
+                    <input
+                      value={draft.apiUrl}
+                      onChange={(e) => setDraft((current) => ({ ...current, apiUrl: e.target.value }))}
+                      className={inputClass}
+                    />
+                    <Label text={t('wsUrl', curLang)} className="mt-3" />
+                    <input
+                      value={draft.wsUrl}
+                      onChange={(e) => setDraft((current) => ({ ...current, wsUrl: e.target.value }))}
+                      className={inputClass}
+                    />
+                    <InsecureRemoteWarning apiUrl={draft.apiUrl} wsUrl={draft.wsUrl} lang={curLang} />
+                    <Label text={t('engineToken', curLang)} className="mt-3" />
+                    <input
+                      type="password"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={draft.engineToken}
+                      placeholder={t('engineTokenPlaceholder', curLang)}
+                      onChange={(e) => setDraft((current) => ({ ...current, engineToken: e.target.value }))}
+                      className={inputClass}
+                    />
+                    <p className="text-[11px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
+                      {t('engineTokenHint', curLang)}
+                    </p>
+                    <p className="text-[11px] text-[var(--color-text-muted)] mt-2 leading-relaxed">
+                      Remote deployment is not bundled. Install `mira` on your remote server separately, then enter its API and WebSocket endpoints here.
+                    </p>
+                    <div className="mt-3">
+                      <ActionButton
+                        disabled={busy || runtimeLoading || !draft.apiUrl.trim()}
+                        onClick={() => {
+                          store.setEngineToken(draft.apiUrl, draft.engineToken)
+                          void loadRuntimeConfig('remoteManual', draft.apiUrl, false)
+                        }}
+                      >
+                        {runtimeLoading ? 'Refreshing...' : 'Refresh from engine'}
+                      </ActionButton>
+                    </div>
+                  </div>
+                )}
+
+                {/* The projects root belongs to whichever engine this tab connects to. */}
+                <div className="mt-5 pt-4 border-t border-[var(--color-border)]">
+                  <Label text={t('workspacePath', curLang)} />
+                  <input
+                    value={draft.workspacePath}
+                    onChange={(e) => {
+                      setWorkspaceEdited(true)
+                      setDraft((current) => ({ ...current, workspacePath: e.target.value }))
+                    }}
+                    disabled={!customProjectDirsAllowed}
+                    className={cn(inputClass, !customProjectDirsAllowed && 'cursor-not-allowed opacity-70')}
+                  />
+                  <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
+                    {customProjectDirsAllowed
+                      ? t('workspacePathHint', curLang)
+                      : t('managedProjectLocationHint', curLang)}
+                  </p>
+                </div>
+
+                {feedback && (
+                  <p className={cn('mt-4 text-xs leading-relaxed whitespace-pre-wrap break-words', feedbackError ? 'text-red-300' : 'text-[var(--color-text-muted)]')}>
+                    {feedback}
+                  </p>
+                )}
+              </div>
+            </div>
+          </Section>
+
+          <Section title={t('manageProviders', curLang)}>
+            <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-3">
+              <div className="flex items-center justify-between gap-4">
+                <p className="text-[11px] text-[var(--color-text-muted)] leading-relaxed flex-1">
+                  {t('settingsProvidersHint', curLang)}
+                </p>
+                <ActionButton
+                  onClick={() => {
+                    closeSettings()
+                    openProviders()
                   }}
-                  disabled={!customProjectDirsAllowed}
-                  className={cn(inputClass, !customProjectDirsAllowed && 'cursor-not-allowed opacity-70')}
-                />
-                <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
-                  {customProjectDirsAllowed
-                    ? t('workspacePathHint', curLang)
-                    : t('managedProjectLocationHint', curLang)}
-                </p>
-              </Section>
-
-              <Section title={t('general', curLang)}>
-                <Label text={t('theme', curLang)} />
-                <div className="flex gap-2">
-                  {(['dark', 'light'] as const).map((th) => (
-                    <button
-                      key={th}
-                      onClick={() => setDraft((current) => ({ ...current, theme: th as Theme }))}
-                      className={cn(
-                        'flex-1 py-2 text-sm rounded-lg border transition-colors',
-                        draft.theme === th
-                          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
-                          : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]',
-                      )}
-                    >
-                      {th === 'dark' ? '🌙 ' : '☀️ '}
-                      {t(th, curLang)}
-                    </button>
-                  ))}
-                </div>
-
-                <Label text={t('language', curLang)} className="mt-4" />
-                <div className="flex gap-2">
-                  {([
-                    { value: 'en' as Language, label: 'English' },
-                    { value: 'zh' as Language, label: '中文' },
-                  ]).map((opt) => (
-                    <button
-                      key={opt.value}
-                      onClick={() => setDraft((current) => ({ ...current, language: opt.value }))}
-                      className={cn(
-                        'flex-1 py-2 text-sm rounded-lg border transition-colors',
-                        draft.language === opt.value
-                          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
-                          : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]',
-                      )}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-
-                <ToggleRow
-                  className="mt-4"
-                  label={t('progressMessages', curLang)}
-                  checked={draft.showProgressMessages}
-                  onToggle={() => setDraft((current) => ({ ...current, showProgressMessages: !current.showProgressMessages }))}
-                />
-                <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
-                  {t('progressMessagesHint', curLang)}
-                </p>
-
-                <ToggleRow
-                  className="mt-4"
-                  label={t('toolCallHistory', curLang)}
-                  checked={draft.showToolCallHistory}
-                  onToggle={() => setDraft((current) => ({ ...current, showToolCallHistory: !current.showToolCallHistory }))}
-                />
-                <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
-                  {t('toolCallHistoryHint', curLang)}
-                </p>
-
-                <ToggleRow
-                  className="mt-4"
-                  label={t('streamResponses', curLang)}
-                  checked={draft.streamResponses}
-                  onToggle={() => setDraft((current) => ({ ...current, streamResponses: !current.streamResponses }))}
-                />
-                <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
-                  {t('streamResponsesHint', curLang)}
-                </p>
-
-                <Label text={t('sendShortcut', curLang)} className="mt-4" />
-                <div className="flex gap-2">
-                  {([
-                    { value: 'enter' as SendShortcut, label: t('enterToSend', curLang) },
-                    { value: 'shift_enter' as SendShortcut, label: t('shiftEnterToSend', curLang) },
-                  ]).map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => setDraft((current) => ({ ...current, sendShortcut: option.value }))}
-                      className={cn(
-                        'flex-1 py-2 text-sm rounded-lg border transition-colors',
-                        draft.sendShortcut === option.value
-                          ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
-                          : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]',
-                      )}
-                    >
-                      {option.label}
-                    </button>
-                  ))}
-                </div>
-              </Section>
-
-              <AppUpdatesSection
-                lang={curLang}
-                receivePrereleases={draft.receivePrereleases}
-                setReceivePrereleases={(receivePrereleases) => setDraft((current) => ({ ...current, receivePrereleases }))}
-              />
-
-              <Section title={t('diagnosticsTitle', curLang)}>
-                <p className="text-xs text-[var(--color-text-muted)] mb-3">{t('diagnosticsHint', curLang)}</p>
-                <ActionButton disabled={busy} onClick={handleExportDiagnostics}>
-                  {t('diagnosticsExport', curLang)}
+                >
+                  {t('manageProviders', curLang)}
                 </ActionButton>
-              </Section>
+              </div>
+            </div>
+          </Section>
 
-              {!localMode && (
-                <Section title={t('connection', curLang)}>
-                  <Label text={t('apiUrl', curLang)} />
-                  <input
-                    value={draft.apiUrl}
-                    onChange={(e) => setDraft((current) => ({ ...current, apiUrl: e.target.value }))}
-                    className={inputClass}
-                  />
-                  <Label text={t('wsUrl', curLang)} className="mt-3" />
-                  <input
-                    value={draft.wsUrl}
-                    onChange={(e) => setDraft((current) => ({ ...current, wsUrl: e.target.value }))}
-                    className={inputClass}
-                  />
-                  <Label text={t('engineToken', curLang)} className="mt-3" />
-                  <input
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={draft.engineToken}
-                    placeholder={t('engineTokenPlaceholder', curLang)}
-                    onChange={(e) => setDraft((current) => ({ ...current, engineToken: e.target.value }))}
-                    className={inputClass}
-                  />
-                  <p className="text-[11px] text-[var(--color-text-muted)] mt-1 leading-relaxed">
-                    {t('engineTokenHint', curLang)}
-                  </p>
-                  <p className="text-[11px] text-[var(--color-text-muted)] mt-2 leading-relaxed">
-                    Remote deployment is not bundled. Install `mira` on your remote server separately, then enter its API and WebSocket endpoints here.
-                  </p>
-                  <div className="mt-3">
-                    <ActionButton
-                      disabled={busy || runtimeLoading || !draft.apiUrl.trim()}
-                      onClick={() => {
-                        store.setEngineToken(draft.apiUrl, draft.engineToken)
-                        void loadRuntimeConfig('remoteManual', draft.apiUrl, false)
-                      }}
-                    >
-                      {runtimeLoading ? 'Refreshing...' : 'Refresh from engine'}
-                    </ActionButton>
-                  </div>
-                </Section>
-              )}
-
-              {localMode && (
-                <Section title="Local Engine">
-                  <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-3 space-y-1">
-                    <p className="text-sm text-[var(--color-text-primary)]">
-                      Phase: <span className="font-medium">{store.localEnginePhase}</span>
-                    </p>
-                    <p className="text-xs text-[var(--color-text-muted)]">
-                      {store.engineVersion ? `Version ${store.engineVersion}` : 'Version unknown'}
-                    </p>
-                    {store.localEngineExecutablePath && (
-                      <p className="text-[11px] text-[var(--color-text-muted)] break-all">
-                        Executable: {store.localEngineExecutablePath}
-                      </p>
-                    )}
-                    {showEngineWarning && (
-                      <p className="text-[11px] text-amber-300 leading-relaxed">
-                        {store.engineMessage || 'Local engine needs provider setup or an engine update.'}
-                      </p>
-                    )}
-                    {store.runtimeConfig?.config_path && (
-                      <p className="text-[11px] text-[var(--color-text-muted)] break-all">
-                        Runtime config path: {store.runtimeConfig.config_path}
-                      </p>
-                    )}
-                  </div>
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <ActionButton disabled={busy || !hasDesktopEngineManager()} onClick={handleRepairEngine}>
-                      Repair service
-                    </ActionButton>
-                    <ActionButton disabled={busy || !hasDesktopEngineManager()} onClick={handleDoctorEngine}>
-                      Run doctor
-                    </ActionButton>
-                    <ActionButton disabled={busy || !hasDesktopEngineManager()} onClick={handleUpgradeEngine}>
-                      Upgrade local engine
-                    </ActionButton>
-                    <ActionButton disabled={busy || runtimeLoading} onClick={() => void loadRuntimeConfig('localBundle', LOCAL_API_URL, true)}>
-                      {runtimeLoading ? 'Refreshing...' : 'Refresh config'}
-                    </ActionButton>
-                  </div>
-                  <EngineLifecycleControls busy={busy || runtimeLoading} onBusyChange={setBusy} />
-                </Section>
-              )}
+          <Section title={t('general', curLang)}>
+            <Label text={t('theme', curLang)} />
+            <div className="flex gap-2">
+              {(['dark', 'light'] as const).map((th) => (
+                <button
+                  key={th}
+                  onClick={() => setDraft((current) => ({ ...current, theme: th as Theme }))}
+                  className={cn(
+                    'flex-1 py-2 text-sm rounded-lg border transition-colors',
+                    draft.theme === th
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+                      : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]',
+                  )}
+                >
+                  {th === 'dark' ? '🌙 ' : '☀️ '}
+                  {t(th, curLang)}
+                </button>
+              ))}
             </div>
 
-          {feedback && (
-            <p className={cn('text-xs leading-relaxed', feedbackError ? 'text-red-300' : 'text-[var(--color-text-muted)]')}>
-              {feedback}
+            <Label text={t('language', curLang)} className="mt-4" />
+            <div className="flex gap-2">
+              {([
+                { value: 'en' as Language, label: 'English' },
+                { value: 'zh' as Language, label: '中文' },
+              ]).map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => setDraft((current) => ({ ...current, language: opt.value }))}
+                  className={cn(
+                    'flex-1 py-2 text-sm rounded-lg border transition-colors',
+                    draft.language === opt.value
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+                      : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]',
+                  )}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            <ToggleRow
+              className="mt-4"
+              label={t('progressMessages', curLang)}
+              checked={draft.showProgressMessages}
+              onToggle={() => setDraft((current) => ({ ...current, showProgressMessages: !current.showProgressMessages }))}
+            />
+            <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
+              {t('progressMessagesHint', curLang)}
             </p>
-          )}
+
+            <ToggleRow
+              className="mt-4"
+              label={t('toolCallHistory', curLang)}
+              checked={draft.showToolCallHistory}
+              onToggle={() => setDraft((current) => ({ ...current, showToolCallHistory: !current.showToolCallHistory }))}
+            />
+            <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
+              {t('toolCallHistoryHint', curLang)}
+            </p>
+
+            <ToggleRow
+              className="mt-4"
+              label={t('streamResponses', curLang)}
+              checked={draft.streamResponses}
+              onToggle={() => setDraft((current) => ({ ...current, streamResponses: !current.streamResponses }))}
+            />
+            <p className="text-[11px] text-[var(--color-text-muted)] mt-1">
+              {t('streamResponsesHint', curLang)}
+            </p>
+
+            <Label text={t('sendShortcut', curLang)} className="mt-4" />
+            <div className="flex gap-2">
+              {([
+                { value: 'enter' as SendShortcut, label: t('enterToSend', curLang) },
+                { value: 'shift_enter' as SendShortcut, label: t('shiftEnterToSend', curLang) },
+              ]).map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => setDraft((current) => ({ ...current, sendShortcut: option.value }))}
+                  className={cn(
+                    'flex-1 py-2 text-sm rounded-lg border transition-colors',
+                    draft.sendShortcut === option.value
+                      ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+                      : 'border-[var(--color-border)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-muted)]',
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </Section>
+
+          <AppUpdatesSection
+            lang={curLang}
+            receivePrereleases={draft.receivePrereleases}
+            setReceivePrereleases={(receivePrereleases) => setDraft((current) => ({ ...current, receivePrereleases }))}
+          />
+
+          <Section title={t('diagnosticsTitle', curLang)}>
+            <p className="text-xs text-[var(--color-text-muted)] mb-3">{t('diagnosticsHint', curLang)}</p>
+            <ActionButton disabled={busy} onClick={handleExportDiagnostics}>
+              {t('diagnosticsExport', curLang)}
+            </ActionButton>
+            {diagnosticsFeedback && (
+              <p className={cn('mt-2 text-xs leading-relaxed', diagnosticsFeedback.error ? 'text-red-300' : 'text-[var(--color-text-muted)]')}>
+                {diagnosticsFeedback.message}
+              </p>
+            )}
+          </Section>
 
           <FeedbackSection lang={curLang} onClose={closeSettings} />
         </div>
@@ -750,6 +930,21 @@ export function SettingsModal() {
   )
 }
 
+function InsecureRemoteWarning({ apiUrl, wsUrl, lang }: { apiUrl: string; wsUrl: string; lang: Language }) {
+  const insecureUrl = [apiUrl, wsUrl].find(isUnencryptedRemoteEndpoint)
+  const suggestion = insecureUrl ? sshTunnelSuggestion(insecureUrl) : null
+  if (!insecureUrl || !suggestion) return null
+  const scheme = new URL(insecureUrl.trim()).protocol.replace(':', '')
+  return (
+    <div role="alert" className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+      <p className="text-xs font-medium text-amber-300">{t('insecureRemoteTitle', lang)}</p>
+      <p className="text-[11px] text-[var(--color-text-secondary)] mt-1 leading-relaxed break-words">
+        {t('insecureRemoteWarning', lang, { scheme, ...suggestion })}
+      </p>
+    </div>
+  )
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <fieldset>
@@ -769,38 +964,141 @@ function Label({ text, className }: { text: string; className?: string }) {
   )
 }
 
-function DeploymentModeSwitch(
-  { mode, onChange }: { mode: DeploymentMode; onChange: (mode: DeploymentMode) => void },
+const deploymentPanelId = 'settings-deployment-panel'
+
+function deploymentTabId(mode: DeploymentMode): string {
+  return `settings-deployment-tab-${mode}`
+}
+
+// One tab per deployment mode: picking a tab switches the mode, and the panel
+// below holds only that mode's parameters.
+function DeploymentModeTabs(
+  { mode, onChange, lang }: { mode: DeploymentMode; onChange: (mode: DeploymentMode) => void; lang: Language },
 ) {
-  const local = mode === 'localBundle'
+  const options: Array<{ value: DeploymentMode; label: string; deprecated?: boolean }> = [
+    { value: 'localBundle', label: t('deploymentLocal', lang) },
+    // Remote-SSH needs the desktop app's ssh bridge.
+    ...(hasRemoteSshBridge() || mode === 'remoteSsh' ? [{ value: 'remoteSsh' as const, label: t('deploymentSsh', lang) }] : []),
+    // Team server sign-in runs in the desktop app's main process.
+    ...(hasTeamServerBridge() || mode === 'teamServer' ? [{ value: 'teamServer' as const, label: t('deploymentTeamServer', lang) }] : []),
+    { value: 'remoteManual', label: t('deploymentDirect', lang), deprecated: true },
+  ]
+  const tabRefs = useRef<Partial<Record<DeploymentMode, HTMLButtonElement | null>>>({})
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const index = options.findIndex((option) => option.value === mode)
+    let next: number
+    if (event.key === 'ArrowRight') next = (index + 1) % options.length
+    else if (event.key === 'ArrowLeft') next = (index - 1 + options.length) % options.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = options.length - 1
+    else return
+    event.preventDefault()
+    const target = options[next].value
+    onChange(target)
+    tabRefs.current[target]?.focus()
+  }
 
   return (
-    <div className="flex items-center gap-3 shrink-0">
-      <span className={cn('text-xs font-medium transition-colors', local ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]')}>
-        Local
-      </span>
-      <button
-        type="button"
-        role="switch"
-        aria-label="Deployment mode"
-        aria-checked={!local}
-        onClick={() => onChange(local ? 'remoteManual' : 'localBundle')}
-        className={cn(
-          'inline-flex h-6 w-11 items-center rounded-full p-0.5 transition-colors',
-          local ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-bg-tertiary)]',
-        )}
-      >
-        <span
-          className={cn(
-            'block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200',
-            local ? 'translate-x-0' : 'translate-x-5',
-          )}
-        />
-      </button>
-      <span className={cn('text-xs font-medium transition-colors', !local ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]')}>
-        Remote
-      </span>
+    <div
+      role="tablist"
+      aria-label={t('deploymentModeTitle', lang)}
+      onKeyDown={handleKeyDown}
+      className="flex border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)]"
+    >
+      {options.map((option) => {
+        const selected = mode === option.value
+        return (
+          <button
+            key={option.value}
+            ref={(el) => { tabRefs.current[option.value] = el }}
+            id={deploymentTabId(option.value)}
+            type="button"
+            role="tab"
+            aria-selected={selected}
+            aria-controls={deploymentPanelId}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              'relative flex-1 min-w-0 px-2 py-2.5 text-xs transition-colors',
+              selected
+                ? 'bg-[var(--color-bg-primary)] text-[var(--color-accent)] font-medium'
+                : 'text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]',
+            )}
+          >
+            {option.label}
+            {option.deprecated && (
+              <span className="ml-1 text-[10px] font-normal text-[var(--color-text-muted)]">({t('deploymentDeprecated', lang)})</span>
+            )}
+            {selected && <span aria-hidden className="absolute inset-x-0 -bottom-px h-0.5 bg-[var(--color-accent)]" />}
+          </button>
+        )
+      })}
     </div>
+  )
+}
+
+function RemoteSshStatusLine({ lang, host, active }: { lang: Language; host: string; active: boolean }) {
+  const status = useRemoteSshStore((s) => s.status)
+  const miraCommand = useSettingsStore((s) => s.sshMiraCommand)
+  // Status belongs to the host the store is connected to; an edited, not yet
+  // connected host has no status to show.
+  if (!active || status.phase === 'idle') return null
+  const tone = status.phase === 'error'
+    ? 'text-red-300'
+    : status.phase === 'connected' ? 'text-[var(--color-text-secondary)]' : 'text-[var(--color-notice-text)]'
+  return (
+    <>
+      <p role="status" className={cn('mt-2 text-[11px] leading-relaxed break-words', tone)}>
+        {remoteSshMessage(status, lang, host, miraCommand)}
+      </p>
+      {status.phase === 'connected' && status.miraPath && (
+        <p className="mt-1 text-[11px] font-mono break-all text-[var(--color-text-muted)]">
+          {t('sshUsingMira', lang, { path: status.miraPath })}
+        </p>
+      )}
+    </>
+  )
+}
+
+function TeamServerStatusLine({ lang, origin, active }: { lang: Language; origin: string | null; active: boolean }) {
+  const phase = useTeamServerStore((s) => s.phase)
+  const sessionOrigin = useTeamServerStore((s) => s.origin)
+  const user = useTeamServerStore((s) => s.user)
+  const persistent = useTeamServerStore((s) => s.persistent)
+  if (!origin || !active || sessionOrigin !== origin) return null
+  const host = serverHost(origin)
+  if (phase === 'signedIn' && user) {
+    return (
+      <>
+        <p role="status" className="mt-2 text-[11px] leading-relaxed text-[var(--color-text-secondary)] break-words">
+          {t('teamServerSignedInAs', lang, { host, user: user.displayName || user.name })}
+        </p>
+        {!persistent && (
+          <p className="mt-1 text-[11px] leading-relaxed text-[var(--color-notice-text)]">{t('teamServerNotPersistent', lang)}</p>
+        )}
+      </>
+    )
+  }
+  if (phase === 'signedOut') {
+    return (
+      <p role="status" className="mt-2 text-[11px] leading-relaxed text-[var(--color-notice-text)] break-words">
+        {t('teamServerSignedOut', lang, { host })}
+      </p>
+    )
+  }
+  return null
+}
+
+function TeamServerSignOutButton(
+  { disabled, lang, origin, onClick }: { disabled: boolean; lang: Language; origin: string; onClick: () => void },
+) {
+  const signedIn = useTeamServerStore((s) => s.phase === 'signedIn' && s.origin === origin)
+  if (!signedIn) return null
+  return (
+    <ActionButton disabled={disabled} onClick={onClick}>
+      {t('teamServerSignOut', lang)}
+    </ActionButton>
   )
 }
 
