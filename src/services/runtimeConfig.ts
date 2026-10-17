@@ -20,6 +20,17 @@ export interface RuntimeProviderSettings {
   // OpenAI-compatible custom provider (``custom`` or ``custom_<id>``). Older
   // engines omit it and support only the single ``custom`` entry.
   is_custom?: boolean
+  // Team server: the administrators manage this provider (its key stays on
+  // Mira Server); the user cannot change it.
+  managed_by?: 'team'
+}
+
+// Team server: what the team settings manage in this engine.
+export interface TeamManagedSummary {
+  revision: string
+  providers: string[]
+  model_params: boolean
+  defaults: string[]
 }
 
 // Updates for one provider. ``null`` deletes an additional custom provider.
@@ -101,6 +112,10 @@ export interface RuntimeConfigPayload {
   providers: Record<string, RuntimeProviderSettings>
   // User-defined per-model parameter rules. Empty when none are configured.
   model_params?: ModelParamRule[]
+  // Team server: "team" when an administrator is editing the team settings.
+  scope?: 'team'
+  // Team server: present in a user's engine when team settings apply.
+  team?: TeamManagedSummary
 }
 
 function resolveApiUrl(apiUrl?: string): string {
