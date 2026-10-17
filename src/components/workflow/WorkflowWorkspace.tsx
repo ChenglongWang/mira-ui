@@ -80,6 +80,8 @@ const DELIVERY_FORMAT_OPTIONS: Array<{
   { format: 'experiment_report', icon: '📋', en: 'Experiment Report', zh: '实验报告' },
   { format: 'paper_article', icon: '📄', en: 'Journal Article (.docx)', zh: '期刊论文（.docx）' },
   { format: 'presentation', icon: '📊', en: 'Presentation (PDF)', zh: '演示文稿（PDF）' },
+  { format: 'slides', icon: '🎞️', en: 'Slides (HTML)', zh: '幻灯片（HTML）' },
+  { format: 'notebook', icon: '📓', en: 'Jupyter Notebook (.ipynb)', zh: 'Jupyter Notebook（.ipynb）' },
   { format: 'metadata', icon: '📦', en: 'Project Metadata (ZIP)', zh: '项目元数据（ZIP）' },
 ]
 
@@ -153,6 +155,22 @@ const STATUS_STYLE: Record<WorkflowRunStatus, string> = {
 
 function moduleMeta(type: WorkflowModuleType) {
   return MODULES.find((item) => item.type === type) ?? MODULES[0]
+}
+
+function moduleGoalPlaceholder(type: WorkflowModuleType, lang: 'zh' | 'en'): string {
+  if (type === 'experiment') {
+    return lang === 'zh'
+      ? '例如：基于已有数据复现基线方案，对比两种方法，并用预设指标评估结果。'
+      : 'Example: Reproduce a baseline on the available data, compare two methods, and evaluate them with predefined metrics.'
+  }
+  if (type === 'delivery') {
+    return lang === 'zh'
+      ? '例如：汇总已完成实验的关键结果与图表，生成一份结构清晰、可追溯的研究报告。'
+      : 'Example: Summarize the completed experiments, key results, and figures into a clear, traceable research report.'
+  }
+  return lang === 'zh'
+    ? '例如：调研该方向近三年的关键论文，并提出三个可验证的研究方向。'
+    : 'Example: Review the last three years of key papers and propose three testable directions.'
 }
 
 const NEXT_MODULE: Partial<Record<WorkflowModuleType, WorkflowModuleType>> = {
@@ -658,7 +676,7 @@ export function WorkflowWorkspace() {
                 value={runIntent}
                 disabled={creating !== null}
                 onChange={(event) => setRunIntent(event.target.value)}
-                placeholder={lang === 'zh' ? '例如：调研该方向近三年的关键论文，并提出三个可验证的研究方向。' : 'Example: Review the last three years of key papers and propose three testable directions.'}
+                placeholder={moduleGoalPlaceholder(startingModule, lang)}
                 className="mt-2 min-h-32 w-full resize-y rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60"
               />
 
