@@ -11,6 +11,7 @@ import type {
   SkillPluginTargetType,
   TaskPlanContract,
   TaskPlan,
+  ProjectFileInfo,
 } from '@/types'
 
 function getApiUrl(): string {
@@ -483,6 +484,60 @@ export async function deleteProjectFiles(sessionId: string): Promise<boolean> {
   return (await deleteProject(sessionId, { deleteFiles: true })).deleted
 }
 
+export type FetchProjectFilesResult =
+  | { ok: true; files: ProjectFileInfo[] }
+  | { ok: false; status: number; error?: string }
+
+function normalizeProjectFileRows(raw: unknown): ProjectFileInfo[] {
+  if (!Array.isArray(raw)) return []
+  const rows: ProjectFileInfo[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const path = typeof row.path === 'string' ? row.path : ''
+    if (!path) continue
+    const name = typeof row.name === 'string' ? row.name : path.split('/').pop() ?? path
+    rows.push({
+      name,
+      path,
+      size: typeof row.size === 'number' ? row.size : 0,
+      mtime: typeof row.mtime === 'number' ? row.mtime : 0,
+      is_dir: row.is_dir === true,
+    })
+  }
+  return rows
+}
+
+export async function fetchProjectFilesResult(sessionId: string): Promise<FetchProjectFilesResult> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/projects/${encodeURIComponent(sessionId)}/files`)
+    if (!resp.ok) {
+      let error: string | undefined
+      try {
+        const data = await resp.json()
+        error = typeof data?.error === 'string' ? data.error : undefined
+      } catch {
+        try {
+          error = (await resp.text()).trim() || undefined
+        } catch {
+          error = undefined
+        }
+      }
+      return { ok: false, status: resp.status, error }
+    }
+    const data = await resp.json()
+    return { ok: true, files: normalizeProjectFileRows(data?.files) }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : undefined
+    return { ok: false, status: 0, error: message }
+  }
+}
+
+export async function fetchProjectFiles(sessionId: string): Promise<ProjectFileInfo[]> {
+  const result = await fetchProjectFilesResult(sessionId)
+  return result.ok ? result.files : []
+}
+
 export interface UploadedProjectFile {
   name: string
   path: string
@@ -579,6 +634,12 @@ export function getProjectArtifactUrl(sessionId: string, artifactPath: string): 
   const sid = encodeURIComponent(sessionId)
   const path = encodeURIComponent(artifactPath)
   return withEngineAuth(`${getApiUrl()}/projects/${sid}/artifacts?path=${path}`)
+}
+
+export function getArtifactDownloadUrl(url: string): string {
+  const downloadUrl = new URL(url, window.location.href)
+  downloadUrl.searchParams.set('download', '1')
+  return downloadUrl.toString()
 }
 
 export async function fetchSkillPlugins(sessionId: string): Promise<SkillPlugin[]> {
