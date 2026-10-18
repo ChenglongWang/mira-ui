@@ -281,7 +281,104 @@ function ChatComposer({
   )
 }
 
-export function AgentPanel() {
+/**
+ * Run mode badge, promote-to-workflow menu and session id for the active
+ * conversation. The workbench shows these in its tab strip; a standalone
+ * AgentPanel shows them in its own header.
+ */
+export function AgentPanelActions() {
+  const lang = useSettingsStore((s) => s.language)
+  const appMode = useProjectStore((s) => s.appMode)
+  const selectedTaskId = useProjectStore((s) => s.selectedTaskId)
+  const selectedWorkflowRun = useWorkflowStore((s) => {
+    const runId = selectedTaskId ? s.selectedRunByProject[selectedTaskId] : null
+    return selectedTaskId && runId
+      ? s.snapshots[selectedTaskId]?.runs.find((run) => run.run_id === runId)
+      : undefined
+  })
+  const activeChatId = useChatStore((s) => s.activeChatId)
+  const openPromotion = useUiStore((s) => s.openPromotion)
+  const [promoteMenuOpen, setPromoteMenuOpen] = useState(false)
+  const isChat = appMode === 'normal'
+  const sessionId = isChat ? activeChatId : selectedTaskId
+  const experimentMode = appMode === 'project' && selectedWorkflowRun?.module_type === 'experiment'
+    ? (selectedWorkflowRun.module_data.experiment_execution_mode === 'manual' ? 'MANUAL' : 'AUTO')
+    : null
+
+  return (
+    <>
+      {experimentMode && (
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] font-medium">
+          {experimentMode}
+        </span>
+      )}
+      {sessionId && isChat && (
+        <div
+          className="relative ml-auto"
+          onKeyDown={(event) => { if (event.key === 'Escape') setPromoteMenuOpen(false) }}
+        >
+          <button
+            onClick={() => setPromoteMenuOpen((open) => !open)}
+            title={t('promoteToProjectHint', lang)}
+            aria-haspopup="menu"
+            aria-expanded={promoteMenuOpen}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-[var(--color-accent)] border border-[var(--color-accent)]/30 hover:bg-[var(--color-accent)]/10 transition-colors"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+            {t('promoteToProject', lang)}
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {promoteMenuOpen && (
+            <>
+              <button
+                type="button"
+                aria-label={t('cancel', lang)}
+                tabIndex={-1}
+                className="fixed inset-0 z-10 cursor-default"
+                onClick={() => setPromoteMenuOpen(false)}
+              />
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] py-1 shadow-xl"
+              >
+                {PIPELINE_STAGES.map((stage) => (
+                  <button
+                    key={stage.moduleType}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPromoteMenuOpen(false)
+                      openPromotion(sessionId, stage.moduleType)
+                    }}
+                    className="flex w-full items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--color-bg-hover)]"
+                  >
+                    <span aria-hidden="true">{stage.icon}</span>
+                    <span className="min-w-0">
+                      <span className="block text-xs text-[var(--color-text-primary)]">{lang === 'zh' ? stage.zh : stage.en}</span>
+                      <span className="block text-[10px] text-[var(--color-text-muted)]">{lang === 'zh' ? stage.zhHint : stage.enHint}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {sessionId && appMode === 'project' && (
+        <span className="ml-auto text-[10px] font-mono text-[var(--color-text-muted)]">
+          {sessionId}
+        </span>
+      )}
+    </>
+  )
+}
+
+export function AgentPanel({ showHeader = true }: { showHeader?: boolean }) {
   const { connected, logsByProject, hydrateLogs, streamingBySession, stoppingBySession } = useAgentStore()
   const showProgressMessages = useSettingsStore((s) => s.showProgressMessages)
   const showToolCallHistory = useSettingsStore((s) => s.showToolCallHistory ?? false)
@@ -305,8 +402,6 @@ export function AgentPanel() {
   const activeStage = useProjectStore((s) => s.activeStage)
   const activeChatId = useChatStore((s) => s.activeChatId)
   const touchChat = useChatStore((s) => s.touchChat)
-  const openPromotion = useUiStore((s) => s.openPromotion)
-  const [promoteMenuOpen, setPromoteMenuOpen] = useState(false)
   const isChat = appMode === 'normal'
   // The active surface is either a research project or a Quick Chat thread.
   const sessionId = isChat ? activeChatId : selectedTaskId
@@ -322,9 +417,6 @@ export function AgentPanel() {
     || selectedWorkflowRun.status === 'waiting_input'
   )
   const composerSessionId = moduleConversationBlocked ? null : sessionId
-  const experimentMode = appMode === 'project' && selectedWorkflowRun?.module_type === 'experiment'
-    ? (selectedWorkflowRun.module_data.experiment_execution_mode === 'manual' ? 'MANUAL' : 'AUTO')
-    : null
 
   const logs = conversationId ? (logsByProject[conversationId] ?? []) : []
   // Streaming is tracked per session so a different session's activity never
@@ -579,86 +671,21 @@ export function AgentPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--color-accent)]">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-        <span className="text-xs font-semibold tracking-wide text-[var(--color-text-muted)] uppercase">
-          {t('agentChat', lang)}
-        </span>
-        <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-muted)]'}`} />
-        <span className="text-[10px] text-[var(--color-text-muted)]">
-          {connected ? t('connected', lang) : t('disconnected', lang)}
-        </span>
-        {experimentMode && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] font-medium">
-            {experimentMode}
+      {showHeader && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--color-accent)]">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <span className="text-xs font-semibold tracking-wide text-[var(--color-text-muted)] uppercase">
+            {t('agentChat', lang)}
           </span>
-        )}
-        {sessionId && isChat && (
-          <div
-            className="relative ml-auto"
-            onKeyDown={(event) => { if (event.key === 'Escape') setPromoteMenuOpen(false) }}
-          >
-            <button
-              onClick={() => setPromoteMenuOpen((open) => !open)}
-              title={t('promoteToProjectHint', lang)}
-              aria-haspopup="menu"
-              aria-expanded={promoteMenuOpen}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-[var(--color-accent)] border border-[var(--color-accent)]/30 hover:bg-[var(--color-accent)]/10 transition-colors"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5" />
-                <polyline points="5 12 12 5 19 12" />
-              </svg>
-              {t('promoteToProject', lang)}
-              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <polyline points="6 9 12 15 18 9" />
-              </svg>
-            </button>
-            {promoteMenuOpen && (
-              <>
-                <button
-                  type="button"
-                  aria-label={t('cancel', lang)}
-                  tabIndex={-1}
-                  className="fixed inset-0 z-10 cursor-default"
-                  onClick={() => setPromoteMenuOpen(false)}
-                />
-                <div
-                  role="menu"
-                  className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] py-1 shadow-xl"
-                >
-                  {PIPELINE_STAGES.map((stage) => (
-                    <button
-                      key={stage.moduleType}
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        setPromoteMenuOpen(false)
-                        openPromotion(sessionId, stage.moduleType)
-                      }}
-                      className="flex w-full items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--color-bg-hover)]"
-                    >
-                      <span aria-hidden="true">{stage.icon}</span>
-                      <span className="min-w-0">
-                        <span className="block text-xs text-[var(--color-text-primary)]">{lang === 'zh' ? stage.zh : stage.en}</span>
-                        <span className="block text-[10px] text-[var(--color-text-muted)]">{lang === 'zh' ? stage.zhHint : stage.enHint}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        {sessionId && appMode === 'project' && (
-          <span className="ml-auto text-[10px] font-mono text-[var(--color-text-muted)]">
-            {sessionId}
+          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-muted)]'}`} />
+          <span className="text-[10px] text-[var(--color-text-muted)]">
+            {connected ? t('connected', lang) : t('disconnected', lang)}
           </span>
-        )}
-      </div>
+          <AgentPanelActions />
+        </div>
+      )}
 
       {/* Message stream */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0">

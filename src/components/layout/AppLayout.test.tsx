@@ -7,7 +7,10 @@ vi.mock('@/components/pipeline/PipelineProgress', () => ({ PipelineProgress: () 
 vi.mock('@/components/queue/ProjectQueue', () => ({ ProjectQueue: () => <div>project-list</div> }))
 vi.mock('@/components/experiment/ExperimentTimeline', () => ({ ExperimentTimeline: () => <div>experiment-timeline</div> }))
 vi.mock('@/components/task/TaskDetail', () => ({ TaskDetail: () => <div>project-content</div> }))
-vi.mock('@/components/agent/AgentPanel', () => ({ AgentPanel: () => <div>agent-panel</div> }))
+vi.mock('@/components/agent/AgentPanel', () => ({
+  AgentPanel: () => <div>agent-panel</div>,
+  AgentPanelActions: () => null,
+}))
 vi.mock('@/components/settings/SettingsModal', () => ({ SettingsModal: () => null }))
 vi.mock('@/components/settings/SkillsPluginsModal', () => ({ SkillsPluginsModal: () => null }))
 vi.mock('@/components/providers/ProvidersPage', () => ({ ProvidersPage: () => null }))
@@ -67,7 +70,7 @@ describe('AppLayout project surfaces', () => {
     ])
     render(<AppLayout />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Files' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Files' }))
     const explorer = within(screen.getByPlaceholderText('Filter files…').closest('.flex-col') as HTMLElement)
     fireEvent.click(await explorer.findByText('Project One'))
     fireEvent.click(screen.getByText('data'))
@@ -77,7 +80,7 @@ describe('AppLayout project surfaces', () => {
     })
     expect(screen.getByText('PRJ-A/data/a.txt')).toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /Agent Chat/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /Agent Chat/i }))
     expect(screen.getByText('agent-panel')).toBeInTheDocument()
     expect(screen.getByText('PRJ-A/data/a.txt')).toBeInTheDocument()
   })
