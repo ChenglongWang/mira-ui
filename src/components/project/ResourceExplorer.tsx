@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   fetchProjectFilesResult,
   getProjectArtifactUrl,
@@ -52,19 +52,35 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
   const [isUploading, setIsUploading] = useState(false)
   const [uploadHint, setUploadHint] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [truncated, setTruncated] = useState(false)
+
+  const uploadInputId = useId()
+  const dataInputId = `${uploadInputId}-data`
+  const referencesInputId = `${uploadInputId}-references`
+  // Latest tasks without refetching every project whenever a task's status changes.
+  const tasksRef = useRef(tasks)
+  tasksRef.current = tasks
+  // Only the newest request may update the list, so a slow response for the
+  // previous project cannot overwrite the current one.
+  const loadSeqRef = useRef(0)
 
   const dataInputRef = useRef<HTMLInputElement>(null)
   const referencesInputRef = useRef<HTMLInputElement>(null)
 
+  // Uploads go to the project being viewed; Quick Chat browses every project.
   const resolveUploadProjectId = useCallback((): string | null => {
-    return selectedTaskId
-  }, [selectedTaskId])
+    return isProjectMode ? selectedTaskId : null
+  }, [isProjectMode, selectedTaskId])
 
   const canUpload = Boolean(resolveUploadProjectId())
 
   const loadFiles = useCallback(async () => {
+    const msgLang = useSettingsStore.getState().language
+    const seq = ++loadSeqRef.current
+    const isCurrent = () => seq === loadSeqRef.current
     setLoading(true)
     setLoadError(null)
+    setTruncated(false)
     try {
       if (scope === 'project') {
         if (!selectedTaskId) {
@@ -72,12 +88,13 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
           return
         }
         const result = await fetchProjectFilesResult(selectedTaskId)
+        if (!isCurrent()) return
         if (!result.ok) {
           setFiles([])
           setLoadError(
             result.status === 405
-              ? t('filesListNotSupported', lang)
-              : t('filesLoadFailed', lang, {
+              ? t('filesListNotSupported', msgLang)
+              : t('filesLoadFailed', msgLang, {
                   status: result.status || '—',
                   detail: result.error ?? '',
                 }),
@@ -85,25 +102,34 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
           return
         }
         setFiles(toProjectScopedEntries(selectedTaskId, result.files))
+        setTruncated(result.truncated)
         return
       }
-      const data = await fetchAllProjectFiles(tasks.map((t) => ({ id: t.id, label: t.label })))
+      const data = await fetchAllProjectFiles(tasksRef.current.map((t) => ({ id: t.id, label: t.label })))
+      if (!isCurrent()) return
       setFiles(data)
     } catch (err) {
+      if (!isCurrent()) return
       console.error('Failed to load files:', err)
       setFiles([])
-      setLoadError(t('filesLoadFailed', lang, { status: '—', detail: '' }))
+      setLoadError(t('filesLoadFailed', msgLang, { status: '—', detail: '' }))
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
-  }, [scope, selectedTaskId, taskIdsKey, tasks, lang])
+    // taskIdsKey stands in for tasks: refetch when projects are added or
+    // removed, not on every status update.
+  }, [scope, selectedTaskId, taskIdsKey])
 
   useEffect(() => {
     void loadFiles()
+  }, [loadFiles, projectsLoaded])
+
+  // Clear the selection only when the browsed context changes, not on every reload.
+  useEffect(() => {
     setSelectedFile(null)
     setPreviewFile(null)
     setChatCenterPreviewFile(null)
-  }, [loadFiles, projectsLoaded, setChatCenterPreviewFile])
+  }, [scope, selectedTaskId, setChatCenterPreviewFile])
 
   const showProjectEmpty = scope === 'project' && !selectedTaskId
   const showWorkspaceEmpty = scope === 'all' && tasks.length === 0 && projectsLoaded
@@ -199,10 +225,13 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
     return tree
   }, [files, searchQuery])
 
+  const filesByPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files])
+
   const renderNode = (node: FileTreeNode, depth = 0) => {
     const hasChildren = Object.keys(node.children).length > 0
-    const isExpanded = expandedNodes.has(node.path)
-    const fileInfo = files.find((f) => f.path === node.path)
+    // While filtering, open every directory so matches are visible.
+    const isExpanded = Boolean(searchQuery) || expandedNodes.has(node.path)
+    const fileInfo = filesByPath.get(node.path)
 
     if (!node.name) {
       return (
@@ -370,7 +399,7 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
           <div className={cn('flex items-center shrink-0 gap-0.5', !isProjectMode && 'ml-auto')}>
             {canUpload ? (
               <label
-                htmlFor="mira-upload-data"
+                htmlFor={dataInputId}
                 className={cn(
                   'p-1.5 rounded cursor-pointer hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)]',
                   isUploading && 'pointer-events-none opacity-50',
@@ -391,7 +420,7 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
             )}
             {canUpload ? (
               <label
-                htmlFor="mira-upload-references"
+                htmlFor={referencesInputId}
                 className={cn(
                   'p-1.5 rounded cursor-pointer hover:bg-[var(--color-bg-hover)] text-[var(--color-text-secondary)]',
                   isUploading && 'pointer-events-none opacity-50',
@@ -430,7 +459,7 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       <input
-        id="mira-upload-data"
+        id={dataInputId}
         ref={dataInputRef}
         type="file"
         multiple
@@ -438,7 +467,7 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
         onChange={(e) => void handleFileChange(e, 'data')}
       />
       <input
-        id="mira-upload-references"
+        id={referencesInputId}
         ref={referencesInputRef}
         type="file"
         multiple
@@ -454,7 +483,12 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
         ) : files.length === 0 ? (
           emptyState()
         ) : (
-          renderNode(rawTree)
+          <>
+            {renderNode(rawTree)}
+            {truncated && (
+              <p className="px-2 pt-2 text-[10px] text-[var(--color-text-muted)]">{t('filesListTruncated', lang)}</p>
+            )}
+          </>
         )}
       </div>
 
@@ -467,8 +501,8 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
           <p className="text-[10px] font-mono text-[var(--color-text-muted)] truncate">{selectedFile.path}</p>
           <p className="text-xs font-semibold truncate">{selectedFile.name}</p>
           <div className="grid grid-cols-2 gap-1 text-[10px] text-[var(--color-text-muted)] font-mono">
-            <span>Size: {formatSize(selectedFile.size)}</span>
-            <span className="text-right">Date: {formatDate(selectedFile.mtime)}</span>
+            <span>{t('fileSizeLabel', lang, { size: formatSize(selectedFile.size) })}</span>
+            <span className="text-right">{t('fileModifiedLabel', lang, { date: formatDate(selectedFile.mtime) })}</span>
           </div>
           <div className="flex gap-1.5">
             <button
@@ -476,7 +510,7 @@ export function ResourceExplorer({ embedded = false }: { embedded?: boolean }) {
               onClick={() => setPreviewFile(selectedFile)}
               className="flex-1 py-1 rounded bg-[var(--color-accent)] text-white text-xs"
             >
-              Preview
+              {t('filePreviewAction', lang)}
             </button>
             <button
               type="button"

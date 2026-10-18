@@ -485,7 +485,7 @@ export async function deleteProjectFiles(sessionId: string): Promise<boolean> {
 }
 
 export type FetchProjectFilesResult =
-  | { ok: true; files: ProjectFileInfo[] }
+  | { ok: true; files: ProjectFileInfo[]; truncated: boolean }
   | { ok: false; status: number; error?: string }
 
 function normalizeProjectFileRows(raw: unknown): ProjectFileInfo[] {
@@ -526,7 +526,7 @@ export async function fetchProjectFilesResult(sessionId: string): Promise<FetchP
       return { ok: false, status: resp.status, error }
     }
     const data = await resp.json()
-    return { ok: true, files: normalizeProjectFileRows(data?.files) }
+    return { ok: true, files: normalizeProjectFileRows(data?.files), truncated: data?.truncated === true }
   } catch (err) {
     const message = err instanceof Error ? err.message : undefined
     return { ok: false, status: 0, error: message }

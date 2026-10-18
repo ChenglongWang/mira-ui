@@ -47,6 +47,7 @@ describe('fetchSkillHistory', () => {
           mtime: 1_700_000_000,
           is_dir: false,
         }],
+        truncated: false,
       })
     })
 

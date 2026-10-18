@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as api from '@/services/api'
 import { useProjectStore } from '@/stores/projectStore'
@@ -21,6 +21,7 @@ describe('ResourceExplorer file identity', () => {
   it('browses filenames that match Object prototype properties', async () => {
     vi.spyOn(api, 'fetchProjectFilesResult').mockResolvedValue({
       ok: true,
+      truncated: false,
       files: ['constructor/one.txt', '__proto__/two.txt', 'toString/three.txt'].map((path) => ({
         name: path.split('/').pop()!, path, size: 1, mtime: 1, is_dir: false,
       })),
@@ -37,6 +38,7 @@ describe('ResourceExplorer file identity', () => {
   it('keeps files selectable without exposing single-file deletion', async () => {
     vi.spyOn(api, 'fetchProjectFilesResult').mockResolvedValue({
       ok: true,
+      truncated: false,
       files: [{ name: 'a.txt', path: 'a.txt', size: 1, mtime: 1, is_dir: false }],
     })
     render(<ResourceExplorer />)
@@ -65,5 +67,64 @@ describe('ResourceExplorer file identity', () => {
     expect(useUiStore.getState().chatCenterPreviewFile).toMatchObject({
       projectId: 'PRJ-B', relativePath: 'data/a.csv', path: 'PRJ-B/data/a.csv',
     })
+  })
+
+  it('shows matches inside collapsed folders while filtering', async () => {
+    vi.spyOn(api, 'fetchProjectFilesResult').mockResolvedValue({
+      ok: true,
+      truncated: false,
+      files: [{ name: 'metrics.json', path: 'experiments/exp001/metrics.json', size: 1, mtime: 1, is_dir: false }],
+    })
+    render(<ResourceExplorer />)
+    await screen.findByText('experiments')
+    expect(screen.queryByText('metrics.json')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Filter files…'), { target: { value: 'metrics' } })
+    expect(screen.getByText('metrics.json')).toBeInTheDocument()
+  })
+
+  it('ignores a slow listing for a project that is no longer selected', async () => {
+    let resolveOld: (value: Awaited<ReturnType<typeof api.fetchProjectFilesResult>>) => void = () => {}
+    vi.spyOn(api, 'fetchProjectFilesResult').mockImplementation((sessionId) => {
+      if (sessionId === 'PRJ-A') return new Promise((resolve) => { resolveOld = resolve })
+      return Promise.resolve({
+        ok: true,
+        truncated: false,
+        files: [{ name: 'new.txt', path: 'new.txt', size: 1, mtime: 1, is_dir: false }],
+      })
+    })
+    render(<ResourceExplorer />)
+    act(() => useProjectStore.setState({ selectedTaskId: 'PRJ-B' }))
+    await screen.findByText('new.txt')
+    await act(async () => resolveOld({
+      ok: true,
+      truncated: false,
+      files: [{ name: 'old.txt', path: 'old.txt', size: 1, mtime: 1, is_dir: false }],
+    }))
+    expect(screen.getByText('new.txt')).toBeInTheDocument()
+    expect(screen.queryByText('old.txt')).not.toBeInTheDocument()
+  })
+
+  it('keeps the chat preview open when task statuses refresh', async () => {
+    const file = { name: 'a.csv', path: 'data/a.csv', size: 1, mtime: 1, is_dir: false }
+    const tasks = [{ id: 'PRJ-A', label: 'a' }] as ReturnType<typeof useProjectStore.getState>['tasks']
+    useProjectStore.setState({ appMode: 'normal', tasks })
+    const fetchFiles = vi.spyOn(api, 'fetchProjectFiles').mockResolvedValue([file])
+    render(<ResourceExplorer />)
+    await screen.findByText('a')
+    const preview = { ...file, projectId: 'PRJ-A', relativePath: 'data/a.csv' }
+    act(() => useUiStore.getState().setChatCenterPreviewFile(preview))
+    act(() => useProjectStore.setState({ tasks: tasks.map((task) => ({ ...task })) }))
+    expect(useUiStore.getState().chatCenterPreviewFile).toEqual(preview)
+    expect(fetchFiles).toHaveBeenCalledTimes(1)
+  })
+
+  it('says when the engine truncated the listing', async () => {
+    vi.spyOn(api, 'fetchProjectFilesResult').mockResolvedValue({
+      ok: true,
+      truncated: true,
+      files: [{ name: 'a.txt', path: 'a.txt', size: 1, mtime: 1, is_dir: false }],
+    })
+    render(<ResourceExplorer />)
+    expect(await screen.findByText(/too many files/)).toBeInTheDocument()
   })
 })
