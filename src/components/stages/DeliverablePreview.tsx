@@ -15,6 +15,7 @@ type PreviewArtifact = {
   mediaType: string
   byteSize?: number
   url: string
+  artifactType?: string
   probeUntilAvailable?: boolean
 }
 
@@ -48,7 +49,10 @@ function previewKind(artifact: PreviewArtifact):
   if (mediaType.startsWith('image/') || ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(extension)) {
     return 'image'
   }
-  if (artifact.name.toLowerCase().endsWith('.bento.html')) return 'slides'
+  // Stored deliverables are named payload.html, so trust the artifact type too.
+  if (artifact.artifactType === 'slides' || /\.(bento|mira)\.html$/.test(artifact.name.toLowerCase())) {
+    return 'slides'
+  }
   if (extension === '.ipynb') return 'notebook'
   if (extension === '.html' || extension === '.htm' || mediaType === 'text/html') return 'html'
   if (
@@ -67,6 +71,21 @@ function DownloadLink({
   artifact: PreviewArtifact
   lang: 'zh' | 'en'
 }) {
+  if (previewKind(artifact) === 'slides') {
+    // The engine serves `mode=edit` as a sandboxed copy without the deck's
+    // read-only flag, so the tab opens the editor (Save downloads the file).
+    const editUrl = new URL(artifact.url, window.location.href)
+    editUrl.searchParams.set('mode', 'edit')
+    return (
+      <button
+        type="button"
+        onClick={() => window.open(editUrl.toString(), '_blank', 'noopener,noreferrer')}
+        className="rounded-lg border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+      >
+        {lang === 'zh' ? '编辑幻灯' : 'Edit slides'}
+      </button>
+    )
+  }
   return (
     <a
       href={artifact.url}
@@ -382,6 +401,7 @@ export function DeliverablePreview({
           mediaType: artifact.media_type,
           byteSize: artifact.byte_size,
           url: getWorkflowArtifactContentUrl(projectId, artifact.artifact_id),
+          artifactType: artifact.artifact_type,
         }))
       }
       const outputPath = configuredPath || legacyOutputPath?.trim()
