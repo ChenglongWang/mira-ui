@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ProjectFileEntry, StartableModuleType, WorkflowModuleType } from '@/types'
 
 export type SystemMessageSeverity = 'info' | 'success' | 'warning' | 'error'
 
@@ -19,10 +20,33 @@ const MAX_SYSTEM_MESSAGES = 16
 
 // Resizable panel bounds (px). Widths persist per browser via localStorage.
 export const SIDEBAR_WIDTH = { min: 160, max: 400, default: 220 } as const
-export const AGENT_PANEL_WIDTH = { min: 360, max: 960, default: 560 } as const
+export const AGENT_PANEL_WIDTH = { min: 480, max: 1200, default: 720 } as const
+export const RESOURCE_PANEL_WIDTH = { min: 200, max: 520, default: 280 } as const
 
 const SIDEBAR_WIDTH_KEY = 'mira:ui:sidebarWidth'
 const AGENT_PANEL_WIDTH_KEY = 'mira:ui:agentPanelWidth'
+const RESOURCE_PANEL_WIDTH_KEY = 'mira:ui:resourcePanelWidth'
+const WORKBENCH_TAB_KEY = 'mira:ui:workbenchTab'
+
+export type WorkbenchTab = 'files' | 'agent'
+
+function loadWorkbenchTab(): WorkbenchTab {
+  try {
+    const raw = localStorage.getItem(WORKBENCH_TAB_KEY)
+    if (raw === 'files' || raw === 'agent') return raw
+  } catch {
+    // ignore
+  }
+  return 'agent'
+}
+
+function saveWorkbenchTab(tab: WorkbenchTab) {
+  try {
+    localStorage.setItem(WORKBENCH_TAB_KEY, tab)
+  } catch {
+    // ignore
+  }
+}
 
 function clamp(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
@@ -47,20 +71,40 @@ function saveWidth(key: string, value: number) {
   }
 }
 
-export interface OpenNewProjectOptions {
-  // When set, the source conversation is attached before the chat thread is removed.
-  fromChatId?: string
+export interface PromotionRequest {
+  // The Quick Chat thread whose conversation is attached to the new project.
+  chatId: string
+  moduleType: StartableModuleType
+}
+
+// Opens a module's start dialog in WorkflowWorkspace from outside that component.
+export interface ModuleStartRequest {
+  projectId: string
+  moduleType: WorkflowModuleType
+  intent: string
+  contextPath?: string
 }
 
 interface UiState {
   sidebarCollapsed: boolean
+  /** Quick-chat center pane (home / file preview) collapsed to foreground the agent workbench. */
+  chatCenterCollapsed: boolean
   agentPanelCollapsed: boolean
   sidebarWidth: number
   agentPanelWidth: number
-  newProjectOpen: boolean
-  newProjectFromChatId: string | null
+  resourcePanelWidth: number
+  workbenchTab: WorkbenchTab
+  /** Chat-mode center pane: file preview (normal mode only). */
+  chatCenterPreviewFile: ProjectFileEntry | null
+  /** One-shot prompt seed for the agent composer (chat mode home chips). */
+  agentDraftPrompt: string | null
+  promotion: PromotionRequest | null
+  pendingModuleStart: ModuleStartRequest | null
   skillsPluginsOpen: boolean
   providersOpen: boolean
+  // Team server administrators: everyone's usage and the token quotas.
+  teamUsageOpen: boolean
+  knowledgeOpen: boolean
   // Set by useUpdateCheck when the main process detects a newer GitHub
   // release. Cleared by "Skip this version" / "Later". Transient — never
   // persisted; main process is the source of truth on every boot.
@@ -72,15 +116,29 @@ interface UiState {
   toggleSidebar: () => void
   setSidebarCollapsed: (v: boolean) => void
   setSidebarWidth: (px: number) => void
+  toggleChatCenter: () => void
+  setChatCenterCollapsed: (v: boolean) => void
+  /** Collapse quick-chat home and expand the agent workbench (chat mode). */
+  focusQuickChatWorkbench: () => void
   toggleAgentPanel: () => void
   setAgentPanelCollapsed: (v: boolean) => void
   setAgentPanelWidth: (px: number) => void
-  openNewProject: (options?: OpenNewProjectOptions) => void
-  closeNewProject: () => void
+  setResourcePanelWidth: (px: number) => void
+  setWorkbenchTab: (tab: WorkbenchTab) => void
+  setChatCenterPreviewFile: (file: ProjectFileEntry | null) => void
+  setAgentDraftPrompt: (text: string | null) => void
+  openPromotion: (chatId: string, moduleType: StartableModuleType) => void
+  closePromotion: () => void
+  requestModuleStart: (request: ModuleStartRequest) => void
+  consumeModuleStart: () => void
   openSkillsPlugins: () => void
   closeSkillsPlugins: () => void
   openProviders: () => void
   closeProviders: () => void
+  openTeamUsage: () => void
+  closeTeamUsage: () => void
+  openKnowledge: () => void
+  closeKnowledge: () => void
   setAvailableUpdate: (info: UpdateInfo | null) => void
   dismissUpdateBanner: () => void
   resetUpdateBannerDismissed: () => void
@@ -97,18 +155,36 @@ function nextSystemMessageId(): string {
 
 export const useUiStore = create<UiState>((set) => ({
   sidebarCollapsed: false,
+  chatCenterCollapsed: false,
   agentPanelCollapsed: false,
   sidebarWidth: loadWidth(SIDEBAR_WIDTH_KEY, SIDEBAR_WIDTH),
   agentPanelWidth: loadWidth(AGENT_PANEL_WIDTH_KEY, AGENT_PANEL_WIDTH),
-  newProjectOpen: false,
-  newProjectFromChatId: null,
+  resourcePanelWidth: loadWidth(RESOURCE_PANEL_WIDTH_KEY, RESOURCE_PANEL_WIDTH),
+  workbenchTab: loadWorkbenchTab(),
+  chatCenterPreviewFile: null,
+  agentDraftPrompt: null,
+  promotion: null,
+  pendingModuleStart: null,
   skillsPluginsOpen: false,
   providersOpen: false,
+  teamUsageOpen: false,
+  knowledgeOpen: false,
   availableUpdate: null,
   updateBannerDismissed: false,
   systemMessages: [],
   toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
   setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
+  toggleChatCenter: () => set((s) => ({ chatCenterCollapsed: !s.chatCenterCollapsed })),
+  setChatCenterCollapsed: (v) => set({ chatCenterCollapsed: v }),
+  focusQuickChatWorkbench: () => {
+    saveWorkbenchTab('agent')
+    set({
+      chatCenterCollapsed: true,
+      agentPanelCollapsed: false,
+      workbenchTab: 'agent',
+      chatCenterPreviewFile: null,
+    })
+  },
   setSidebarWidth: (px) => {
     const w = clamp(px, SIDEBAR_WIDTH.min, SIDEBAR_WIDTH.max)
     saveWidth(SIDEBAR_WIDTH_KEY, w)
@@ -121,17 +197,33 @@ export const useUiStore = create<UiState>((set) => ({
     saveWidth(AGENT_PANEL_WIDTH_KEY, w)
     set({ agentPanelWidth: w })
   },
-  openNewProject: (options) =>
+  setResourcePanelWidth: (px) => {
+    const w = clamp(px, RESOURCE_PANEL_WIDTH.min, RESOURCE_PANEL_WIDTH.max)
+    saveWidth(RESOURCE_PANEL_WIDTH_KEY, w)
+    set({ resourcePanelWidth: w })
+  },
+  setWorkbenchTab: (tab) => {
+    saveWorkbenchTab(tab)
+    set({ workbenchTab: tab })
+  },
+  setChatCenterPreviewFile: (file) =>
     set({
-      newProjectOpen: true,
-      newProjectFromChatId: options?.fromChatId ?? null,
+      chatCenterPreviewFile: file,
+      ...(file ? { chatCenterCollapsed: false } : {}),
     }),
-  closeNewProject: () =>
-    set({ newProjectOpen: false, newProjectFromChatId: null }),
+  setAgentDraftPrompt: (text) => set({ agentDraftPrompt: text }),
+  openPromotion: (chatId, moduleType) => set({ promotion: { chatId, moduleType } }),
+  closePromotion: () => set({ promotion: null }),
+  requestModuleStart: (request) => set({ pendingModuleStart: request }),
+  consumeModuleStart: () => set({ pendingModuleStart: null }),
   openSkillsPlugins: () => set({ skillsPluginsOpen: true }),
   closeSkillsPlugins: () => set({ skillsPluginsOpen: false }),
   openProviders: () => set({ providersOpen: true }),
   closeProviders: () => set({ providersOpen: false }),
+  openTeamUsage: () => set({ teamUsageOpen: true }),
+  closeTeamUsage: () => set({ teamUsageOpen: false }),
+  openKnowledge: () => set({ knowledgeOpen: true }),
+  closeKnowledge: () => set({ knowledgeOpen: false }),
   setAvailableUpdate: (info) => set({ availableUpdate: info, updateBannerDismissed: false }),
   dismissUpdateBanner: () => set({ updateBannerDismissed: true }),
   resetUpdateBannerDismissed: () => set({ updateBannerDismissed: false }),

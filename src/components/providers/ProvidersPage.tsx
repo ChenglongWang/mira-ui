@@ -9,21 +9,25 @@ import {
   TEAM_ROLES,
   type ModelParamRule,
   type ModelParamValue,
+  type ProviderUpdate,
   type ReasoningEffort,
   type RuntimeConfigPayload,
+  type RuntimeProviderSettings,
   type TeamRole,
 } from '@/services/runtimeConfig'
 import { t } from '@/i18n'
 import type { I18nKey } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from './ProviderIcon'
-import { providerDescription, providerDocsUrl } from './catalog'
+import { providerDescription, providerDocsUrl, providerNotice } from './catalog'
 
 interface ProviderDraft {
   apiKey: string
   apiBase: string
   models: string[]
   enabled: boolean
+  // Display name; only editable for custom providers.
+  name: string
 }
 
 interface ActiveDraft {
@@ -145,9 +149,26 @@ function buildDrafts(payload: RuntimeConfigPayload): Record<string, ProviderDraf
       apiBase: settings.api_base ?? '',
       models: [...(settings.models ?? [])],
       enabled: Boolean(settings.enabled),
+      name: settings.display_name,
     }
   }
   return drafts
+}
+
+function isCustomProvider(name: string, settings: RuntimeProviderSettings | undefined): boolean {
+  return settings?.is_custom ?? name === 'custom'
+}
+
+// Ids of additional custom providers must match the engine's custom_<suffix> pattern.
+function newCustomProviderId(taken: Set<string>): string {
+  for (;;) {
+    const id = `custom_${Math.random().toString(36).slice(2, 10)}`
+    if (/^custom_[a-z0-9]{1,32}$/.test(id) && !taken.has(id)) return id
+  }
+}
+
+function normalizedName(value: string): string {
+  return value.trim().toLowerCase()
 }
 
 function buildActive(payload: RuntimeConfigPayload): ActiveDraft {
@@ -167,6 +188,7 @@ function buildActive(payload: RuntimeConfigPayload): ActiveDraft {
 export function ProvidersPage() {
   const providersOpen = useUiStore((s) => s.providersOpen)
   const closeProviders = useUiStore((s) => s.closeProviders)
+  const isMacDesktop = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin'
   const lang = useSettingsStore((s) => s.language)
   const apiUrl = useSettingsStore((s) => s.apiUrl)
   const setRuntimeConfig = useSettingsStore((s) => s.setRuntimeConfig)
@@ -191,6 +213,10 @@ export function ProvidersPage() {
   const [ruleForms, setRuleForms] = useState<RuleForm[]>([])
   // Editable form state for the agent runtime knobs.
   const [runtimeForm, setRuntimeForm] = useState<RuntimeForm | null>(null)
+  // Custom providers added on this page and not saved yet, and saved ones
+  // marked for deletion on the next save.
+  const [newProviders, setNewProviders] = useState<Record<string, RuntimeProviderSettings>>({})
+  const [deletedProviders, setDeletedProviders] = useState<string[]>([])
   const loadTokenRef = useRef(0)
 
   const teamCapable = payload?.runtime.supervisor_provider !== undefined
@@ -203,12 +229,15 @@ export function ProvidersPage() {
     setSearch('')
     setNewModel('')
     setFetchedModels([])
+    setRoleMenu(null)
     void (async () => {
       try {
         const data = await fetchRuntimeConfig(apiUrl)
         if (loadTokenRef.current !== token) return
         setPayload(data)
         setDrafts(buildDrafts(data))
+        setNewProviders({})
+        setDeletedProviders([])
         setActive(buildActive(data))
         setRuleForms(rulesToForms(data.model_params ?? []))
         setRuntimeForm(buildRuntimeForm(data))
@@ -225,12 +254,6 @@ export function ProvidersPage() {
     })()
   }, [providersOpen, apiUrl])
 
-  // Reset the fetched-models panel + any open role menu when the provider changes.
-  useEffect(() => {
-    setFetchedModels([])
-    setRoleMenu(null)
-  }, [selected])
-
   // Auto-dismiss the feedback toast (errors linger a little longer).
   useEffect(() => {
     if (!feedback) return
@@ -238,15 +261,54 @@ export function ProvidersPage() {
     return () => clearTimeout(id)
   }, [feedback])
 
+  const allSettings = useMemo<Record<string, RuntimeProviderSettings>>(
+    () => ({ ...(payload?.providers ?? {}), ...newProviders }),
+    [payload, newProviders],
+  )
+
+  // Engines that report ``is_custom`` support several, renamable custom providers.
+  const multiCustom = useMemo(
+    () => Object.values(payload?.providers ?? {}).some((settings) => settings.is_custom !== undefined),
+    [payload],
+  )
+
+  const labelFor = (name: string): string => {
+    const settings = allSettings[name]
+    const draftName = drafts[name]?.name.trim()
+    if (multiCustom && isCustomProvider(name, settings) && draftName) return draftName
+    return settings?.display_name || name
+  }
+
+  // Provider list with live (draft) names; unsaved custom providers follow the
+  // saved ones so all custom providers stay together.
   const providerEntries = useMemo(() => {
     if (!payload) return []
-    return Object.entries(payload.providers).filter(([name]) => name !== 'auto')
-  }, [payload])
+    const saved = Object.entries(payload.providers)
+      .filter(([name]) => name !== 'auto' && !deletedProviders.includes(name))
+    const lastCustom = saved.reduce((last, [name, settings], index) => (isCustomProvider(name, settings) ? index : last), -1)
+    const entries = [...saved]
+    entries.splice(lastCustom + 1, 0, ...Object.entries(newProviders))
+    return entries.map(([name, settings]): [string, RuntimeProviderSettings] => [
+      name,
+      { ...settings, display_name: labelFor(name) },
+    ])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payload, newProviders, deletedProviders, drafts, multiCustom])
 
   const isEnabled = (name: string): boolean => {
     const draft = drafts[name]
     if (draft) return draft.enabled
-    return Boolean(payload?.providers[name]?.enabled)
+    return Boolean(allSettings[name]?.enabled)
+  }
+
+  // Provider names must be unique: a custom provider needs a name that no
+  // other provider (built-in or custom) uses.
+  const nameErrorFor = (name: string): string | null => {
+    if (!multiCustom || !isCustomProvider(name, allSettings[name])) return null
+    const label = normalizedName(drafts[name]?.name ?? '')
+    if (!label) return t('providersCustomNameRequired', lang)
+    const other = providerEntries.find(([other, settings]) => other !== name && normalizedName(settings.display_name) === label)
+    return other ? t('providersCustomNameDuplicate', lang, { name: other[1].display_name }) : null
   }
 
   const filtered = useMemo(() => {
@@ -258,14 +320,79 @@ export function ProvidersPage() {
     )
     const enabled = list.filter(([name]) => isEnabled(name))
     const disabled = list.filter(([name]) => !isEnabled(name))
-    return { enabled, disabled }
+    // Providers that are not enabled yet are split by billing model, so
+    // subscription plans (Coding Plan, Token Plan, ...) are easy to find.
+    const subscription = disabled.filter(([, settings]) => settings.is_subscription)
+    const payAsYouGo = disabled.filter(([, settings]) => !settings.is_subscription)
+    return { enabled, subscription, payAsYouGo }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerEntries, search, drafts, payload])
 
   if (!providersOpen) return null
 
+  // Switching provider resets the fetched-models panel and any open role menu.
+  // Done here rather than in an effect on ``selected``: an effect flushed late
+  // could close a role menu the user opened right after the switch.
+  const selectProvider = (name: string | null) => {
+    setSelected(name)
+    setFetchedModels([])
+    setRoleMenu(null)
+  }
+
   const updateDraft = (name: string, patch: Partial<ProviderDraft>) => {
     setDrafts((current) => ({ ...current, [name]: { ...current[name], ...patch } }))
+  }
+
+  const addCustomProvider = () => {
+    const custom = payload?.providers.custom
+    if (!custom) return
+    // A new provider is the user's own, even when the team manages "custom".
+    const { managed_by: _managedBy, ...base } = custom
+    const id = newCustomProviderId(new Set(Object.keys(allSettings)))
+    const labels = new Set(providerEntries.map(([, settings]) => normalizedName(settings.display_name)))
+    let index = 2
+    while (labels.has(normalizedName(`Custom ${index}`))) index += 1
+    const name = `Custom ${index}`
+    setNewProviders((current) => ({
+      ...current,
+      [id]: {
+        ...base,
+        api_key_configured: false,
+        api_key_preview: null,
+        api_base: null,
+        models: [],
+        configured: false,
+        enabled: true,
+        display_name: name,
+        is_custom: true,
+      },
+    }))
+    setDrafts((current) => ({ ...current, [id]: { apiKey: '', apiBase: '', models: [], enabled: true, name } }))
+    selectProvider(id)
+  }
+
+  const deleteCustomProvider = (id: string) => {
+    if (newProviders[id]) {
+      setNewProviders(({ [id]: _removed, ...rest }) => rest)
+    } else {
+      setDeletedProviders((current) => [...current, id])
+    }
+    setDrafts(({ [id]: _removed, ...rest }) => rest)
+    // Bindings must not point at a provider that no longer exists.
+    setActive((cur) => {
+      if (!cur) return cur
+      const next = { ...cur }
+      if (next.provider === id) next.provider = 'auto'
+      for (const role of TEAM_ROLES) {
+        if (next[`${role}_provider`] === id) {
+          next[`${role}_provider`] = 'auto'
+          next[`${role}_model`] = ''
+        }
+      }
+      return next
+    })
+    const fallback = providerEntries.find(([name]) => name !== id)
+    selectProvider(fallback ? fallback[0] : null)
   }
 
   const updateActive = (patch: Partial<ActiveDraft>) => {
@@ -379,28 +506,41 @@ export function ProvidersPage() {
 
   const handleSave = async () => {
     if (!payload || !active) return
+    const invalid = providerEntries.map(([name]) => [name, nameErrorFor(name)] as const).find(([, error]) => error)
+    if (invalid) {
+      selectProvider(invalid[0])
+      setFeedback({ text: invalid[1]!, error: true })
+      return
+    }
     setSaving(true)
     setFeedback(null)
     try {
       const nextRules = formsToRules(ruleForms)
-      const rulesChanged = JSON.stringify(nextRules) !== JSON.stringify(payload.model_params ?? [])
+      const rulesChanged = !payload.team?.model_params
+        && JSON.stringify(nextRules) !== JSON.stringify(payload.model_params ?? [])
 
-      const providerUpdates: Record<string, { api_key?: string; api_base?: string | null; models?: string[]; enabled?: boolean }> = {}
+      const providerUpdates: Record<string, ProviderUpdate> = {}
       for (const [name, draft] of Object.entries(drafts)) {
-        const original = payload.providers[name]
+        const isNew = Boolean(newProviders[name])
+        const original = isNew ? undefined : payload.providers[name]
+        if (original?.managed_by === 'team') continue
         const apiKey = draft.apiKey.trim()
         const apiBase = draft.apiBase.trim() ? draft.apiBase.trim() : null
         const modelsChanged = JSON.stringify(draft.models) !== JSON.stringify(original?.models ?? [])
         const apiBaseChanged = apiBase !== (original?.api_base ?? null)
-        const enabledChanged = draft.enabled !== Boolean(original?.enabled)
-        if (!apiKey && !modelsChanged && !apiBaseChanged && !enabledChanged) continue
+        const enabledChanged = isNew || draft.enabled !== Boolean(original?.enabled)
+        const nameChanged = multiCustom && isCustomProvider(name, allSettings[name])
+          && (isNew || draft.name.trim() !== (original?.display_name ?? ''))
+        if (!apiKey && !modelsChanged && !apiBaseChanged && !enabledChanged && !nameChanged) continue
         providerUpdates[name] = {
           ...(apiKey ? { api_key: apiKey } : {}),
           api_base: apiBase,
           models: draft.models,
           ...(enabledChanged ? { enabled: draft.enabled } : {}),
+          ...(nameChanged ? { name: draft.name.trim() || null } : {}),
         }
       }
+      for (const name of deletedProviders) providerUpdates[name] = null
 
       const runtime: Record<string, string | number | boolean | null> = { provider: active.provider }
       // The backend rejects an empty primary model, so only send it when set.
@@ -442,6 +582,8 @@ export function ProvidersPage() {
       setRuntimeConfig(result)
       setPayload(result)
       setDrafts(buildDrafts(result))
+      setNewProviders({})
+      setDeletedProviders([])
       setActive(buildActive(result))
       setRuntimeForm(buildRuntimeForm(result))
       // Only repopulate from the server when it actually echoes the rules back.
@@ -458,8 +600,17 @@ export function ProvidersPage() {
     }
   }
 
-  const selectedSettings = selected ? payload?.providers[selected] : undefined
+  const selectedSettings = selected ? allSettings[selected] : undefined
   const selectedDraft = selected ? drafts[selected] : undefined
+  // Team server: administrators manage this provider; the user only picks models.
+  const teamManaged = selectedSettings?.managed_by === 'team'
+  const selectedIsCustom = selected ? isCustomProvider(selected, selectedSettings) : false
+  // The engine only knows a custom provider once it is saved.
+  const selectedUnsaved = selected ? Boolean(newProviders[selected]) : false
+  // Additional custom providers use the plain "custom" catalog entry.
+  const catalogKey = selectedIsCustom ? 'custom' : selected ?? ''
+  const selectedLabel = selected ? labelFor(selected) : ''
+  const selectedNameError = selected ? nameErrorFor(selected) : null
   const modelOptionsFor = (provider: string): string[] =>
     drafts[provider]?.models ?? payload?.providers[provider]?.models ?? []
 
@@ -484,8 +635,28 @@ export function ProvidersPage() {
           </button>
         </div>
       )}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--color-border)] shrink-0">
-        <h2 className="text-base font-semibold text-[var(--color-text-primary)]">{t('providersTitle', lang)}</h2>
+      {/* This overlay covers the TopBar, which is an Electron drag region on
+          macOS. Drag regions swallow clicks regardless of z-index, so the
+          header must opt out or Save / Close are unclickable. On macOS the
+          hiddenInset traffic lights also sit over the top-left corner. */}
+      <div
+        data-drag-region="no-drag"
+        className={cn(
+          'flex items-center justify-between py-4 pr-6 border-b border-[var(--color-border)] shrink-0',
+          isMacDesktop ? 'pl-24' : 'pl-6',
+        )}
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-base font-semibold text-[var(--color-text-primary)]">{t('providersTitle', lang)}</h2>
+          {payload?.scope === 'team' && (
+            <span
+              title={t('providersTeamScopeHint', lang)}
+              className="text-[11px] px-2 py-0.5 rounded-full border border-[var(--color-notice-border)] bg-[var(--color-notice-bg)] text-[var(--color-notice-text)]"
+            >
+              {t('providersTeamScope', lang)} · {t('providersTeamScopeHint', lang)}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-3">
           <button
             onClick={() => void handleSave()}
@@ -521,7 +692,7 @@ export function ProvidersPage() {
           <div className="flex-1 overflow-y-auto p-2 space-y-3">
             <button
               type="button"
-              onClick={() => setSelected(MODEL_PARAMS_VIEW)}
+              onClick={() => selectProvider(MODEL_PARAMS_VIEW)}
               className={cn(
                 'w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors',
                 selected === MODEL_PARAMS_VIEW ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]/60',
@@ -532,7 +703,7 @@ export function ProvidersPage() {
             </button>
             <button
               type="button"
-              onClick={() => setSelected(RUNTIME_VIEW)}
+              onClick={() => selectProvider(RUNTIME_VIEW)}
               className={cn(
                 'w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors',
                 selected === RUNTIME_VIEW ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]/60',
@@ -545,16 +716,39 @@ export function ProvidersPage() {
               title={t('providersGroupEnabled', lang)}
               entries={filtered.enabled}
               selected={selected}
-              onSelect={setSelected}
+              onSelect={selectProvider}
               enabledGroup
+              teamBadge={t('providersTeamBadge', lang)}
             />
             <ProviderGroup
-              title={t('providersGroupDisabled', lang)}
-              entries={filtered.disabled}
+              title={t('providersGroupSubscription', lang)}
+              entries={filtered.subscription}
               selected={selected}
-              onSelect={setSelected}
+              onSelect={selectProvider}
               enabledGroup={false}
+              teamBadge={t('providersTeamBadge', lang)}
+              collapsible
+              forceOpen={Boolean(search.trim())}
             />
+            <ProviderGroup
+              title={t('providersGroupPayAsYouGo', lang)}
+              entries={filtered.payAsYouGo}
+              selected={selected}
+              onSelect={selectProvider}
+              enabledGroup={false}
+              teamBadge={t('providersTeamBadge', lang)}
+              collapsible
+              forceOpen={Boolean(search.trim())}
+            />
+            {multiCustom && payload?.providers.custom && (
+              <button
+                type="button"
+                onClick={addCustomProvider}
+                className="w-full rounded-lg border border-dashed border-[var(--color-border)] px-2 py-2 text-left text-sm text-[var(--color-text-secondary)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+              >
+                + {t('providersAddCustom', lang)}
+              </button>
+            )}
           </div>
         </div>
 
@@ -562,7 +756,16 @@ export function ProvidersPage() {
             fetched-models list fills the blank space to their right. */}
         <div className="flex-1 overflow-y-auto px-6 py-5">
           {selected === MODEL_PARAMS_VIEW ? (
-            <ModelParamsEditor forms={ruleForms} setForms={setRuleForms} lang={lang} />
+            payload?.team?.model_params ? (
+              <div className="space-y-3">
+                <p className="text-[11px] text-[var(--color-notice-text)]">{t('modelParamsTeamManaged', lang)}</p>
+                <fieldset disabled className="opacity-70">
+                  <ModelParamsEditor forms={ruleForms} setForms={setRuleForms} lang={lang} />
+                </fieldset>
+              </div>
+            ) : (
+              <ModelParamsEditor forms={ruleForms} setForms={setRuleForms} lang={lang} />
+            )
           ) : selected === RUNTIME_VIEW ? (
             <RuntimeSettingsEditor form={runtimeForm} setForm={setRuntimeForm} lang={lang} />
           ) : (
@@ -573,18 +776,18 @@ export function ProvidersPage() {
           ) : (
             <div className="max-w-2xl space-y-5">
               <div className="flex items-center gap-3">
-                <ProviderIcon provider={selected} displayName={selectedSettings.display_name} size={32} />
+                <ProviderIcon provider={catalogKey} displayName={selectedLabel} size={32} />
                 <div>
                   <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">
-                    {selectedSettings.display_name}
+                    {selectedLabel}
                   </h3>
-                  {providerDescription(selected, lang) && (
-                    <p className="text-[11px] text-[var(--color-text-muted)]">{providerDescription(selected, lang)}</p>
+                  {providerDescription(catalogKey, lang) && (
+                    <p className="text-[11px] text-[var(--color-text-muted)]">{providerDescription(catalogKey, lang)}</p>
                   )}
                 </div>
-                {providerDocsUrl(selected) && (
+                {providerDocsUrl(catalogKey) && (
                   <a
-                    href={providerDocsUrl(selected) ?? undefined}
+                    href={providerDocsUrl(catalogKey) ?? undefined}
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] text-[var(--color-accent)] hover:underline"
@@ -598,11 +801,55 @@ export function ProvidersPage() {
                     checked={selectedDraft.enabled}
                     onChange={(value) => updateDraft(selected, { enabled: value })}
                     label={selectedDraft.enabled ? t('providersEnableOff', lang) : t('providersEnableOn', lang)}
+                    disabled={teamManaged}
                   />
                 </div>
               </div>
 
-              {selectedSettings.is_oauth ? (
+              {providerNotice(catalogKey, lang) && (
+                <p role="note" className="rounded-lg border border-[var(--color-notice-border)] bg-[var(--color-notice-bg)] px-3 py-2 text-[11px] leading-relaxed text-[var(--color-notice-text)]">
+                  {providerNotice(catalogKey, lang)}
+                </p>
+              )}
+
+              {selectedIsCustom && multiCustom && !teamManaged && (
+                <div>
+                  <FieldLabel text={t('providersCustomName', lang)} />
+                  <div className="flex items-center gap-3">
+                    <input
+                      aria-label={t('providersCustomName', lang)}
+                      value={selectedDraft.name}
+                      onChange={(e) => updateDraft(selected, { name: e.target.value })}
+                      placeholder={t('providersCustomNamePlaceholder', lang)}
+                      aria-invalid={selectedNameError ? true : undefined}
+                      className={cn(inputClass, selectedNameError && 'border-red-500/60 focus:border-red-500')}
+                    />
+                    {selected !== 'custom' && (
+                      <button
+                        type="button"
+                        onClick={() => deleteCustomProvider(selected)}
+                        title={t('providersDeleteCustomHint', lang)}
+                        className="shrink-0 px-3 py-1.5 text-xs rounded-lg border border-red-500/40 text-red-400 hover:bg-red-500/10 transition-colors"
+                      >
+                        {t('providersDeleteCustom', lang)}
+                      </button>
+                    )}
+                  </div>
+                  {selectedNameError ? (
+                    <p role="alert" className="mt-1 text-[11px] leading-relaxed text-red-400">
+                      {selectedNameError}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-[11px] text-[var(--color-text-muted)]">{t('providersCustomNameHint', lang)}</p>
+                  )}
+                </div>
+              )}
+
+              {teamManaged ? (
+                <p className="rounded-lg border border-[var(--color-notice-border)] bg-[var(--color-notice-bg)] px-3 py-2 text-[11px] text-[var(--color-notice-text)]">
+                  {t('providersTeamManaged', lang, { provider: selectedSettings.display_name })}
+                </p>
+              ) : selectedSettings.is_oauth ? (
                 <p className="text-[11px] text-[var(--color-text-muted)]">
                   {t('providersOauthNote', lang, { provider: selectedSettings.display_name })}
                 </p>
@@ -650,13 +897,15 @@ export function ProvidersPage() {
                   <FieldLabel text={t('providersModels', lang)} className="mb-0" />
                   <div className="flex items-center gap-2">
                     {!selectedSettings.is_oauth && (
-                      <SmallButton disabled={testing} onClick={() => void handleTest(selected)}>
+                      <SmallButton disabled={testing || selectedUnsaved} title={selectedUnsaved ? t('providersSaveFirst', lang) : undefined} onClick={() => void handleTest(selected)}>
                         {testing ? t('providersTesting', lang) : t('providersTest', lang)}
                       </SmallButton>
                     )}
-                    <SmallButton disabled={fetchingModels} onClick={() => void handleFetchModels(selected)}>
-                      {fetchingModels ? t('providersFetching', lang) : t('providersFetchModels', lang)}
-                    </SmallButton>
+                    {!teamManaged && (
+                      <SmallButton disabled={fetchingModels || selectedUnsaved} title={selectedUnsaved ? t('providersSaveFirst', lang) : undefined} onClick={() => void handleFetchModels(selected)}>
+                        {fetchingModels ? t('providersFetching', lang) : t('providersFetchModels', lang)}
+                      </SmallButton>
+                    )}
                   </div>
                 </div>
 
@@ -754,19 +1003,22 @@ export function ProvidersPage() {
                             )}
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() => removeModel(selected, model)}
-                            className="text-[11px] text-[var(--color-text-muted)] hover:text-red-400"
-                          >
-                            {t('providersRemove', lang)}
-                          </button>
+                          {!teamManaged && (
+                            <button
+                              type="button"
+                              onClick={() => removeModel(selected, model)}
+                              className="text-[11px] text-[var(--color-text-muted)] hover:text-red-400"
+                            >
+                              {t('providersRemove', lang)}
+                            </button>
+                          )}
                         </div>
                       </li>
                     ))}
                   </ul>
                 )}
 
+                {!teamManaged && (
                 <div className="flex items-center gap-2">
                   <input
                     value={newModel}
@@ -782,6 +1034,7 @@ export function ProvidersPage() {
                   />
                   <SmallButton onClick={() => addModel(selected, newModel)}>{t('providersAddModel', lang)}</SmallButton>
                 </div>
+                )}
               </div>
             </div>
           )}
@@ -899,40 +1152,70 @@ function ProviderGroup({
   selected,
   onSelect,
   enabledGroup,
+  teamBadge,
+  collapsible = false,
+  forceOpen = false,
 }: {
   title: string
   entries: Array<[string, RuntimeConfigPayload['providers'][string]]>
   selected: string | null
   onSelect: (name: string) => void
+  teamBadge: string
   // Whether this group lists enabled providers. The green "ready" dot is only
   // meaningful for enabled providers — disabled ones (e.g. local vLLM/Ollama/
   // OVMS that report ``configured`` without a key) must not show it.
   enabledGroup: boolean
+  // Collapsible groups get a toggle header; ``forceOpen`` (e.g. while
+  // searching) shows the entries even when the group is collapsed.
+  collapsible?: boolean
+  forceOpen?: boolean
 }) {
+  const [collapsed, setCollapsed] = useState(false)
   if (entries.length === 0) return null
+  const open = !collapsible || forceOpen || !collapsed
+  const heading = `${title} (${entries.length})`
   return (
     <div>
-      <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
-        {title} ({entries.length})
-      </p>
-      <ul>
-        {entries.map(([name, settings]) => (
-          <li key={name}>
-            <button
-              type="button"
-              onClick={() => onSelect(name)}
-              className={cn(
-                'w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors',
-                selected === name ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]/60',
-              )}
-            >
-              <ProviderIcon provider={name} displayName={settings.display_name} size={22} />
-              <span className="text-sm text-[var(--color-text-primary)] truncate flex-1">{settings.display_name}</span>
-              {enabledGroup && settings.configured && <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] shrink-0" />}
-            </button>
-          </li>
-        ))}
-      </ul>
+      {collapsible ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed((value) => !value)}
+          aria-expanded={open}
+          className="w-full flex items-center gap-1 px-2 py-1 text-left text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
+        >
+          <span aria-hidden className="w-3 shrink-0">{open ? '▾' : '▸'}</span>
+          <span>{heading}</span>
+        </button>
+      ) : (
+        <p className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          {heading}
+        </p>
+      )}
+      {open && (
+        <ul>
+          {entries.map(([name, settings]) => (
+            <li key={name}>
+              <button
+                type="button"
+                onClick={() => onSelect(name)}
+                className={cn(
+                  'w-full flex items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors',
+                  selected === name ? 'bg-[var(--color-bg-hover)]' : 'hover:bg-[var(--color-bg-hover)]/60',
+                )}
+              >
+                <ProviderIcon provider={name} displayName={settings.display_name} size={22} />
+                <span className="text-sm text-[var(--color-text-primary)] truncate flex-1">{settings.display_name}</span>
+                {settings.managed_by === 'team' && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-notice-border)] bg-[var(--color-notice-bg)] text-[var(--color-notice-text)] shrink-0">
+                    {teamBadge}
+                  </span>
+                )}
+                {enabledGroup && settings.configured && <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-success)] shrink-0" />}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   )
 }
@@ -965,6 +1248,14 @@ function ModelBinding({
   lang: Parameters<typeof t>[1]
 }) {
   const listId = `models-${label.replace(/\s+/g, '-')}`
+  const renderOptions = (entries: typeof providerEntries) =>
+    entries.map(([name, settings]) => (
+      <option key={name} value={name}>
+        {settings.display_name}
+      </option>
+    ))
+  const subscriptionEntries = providerEntries.filter(([, settings]) => settings.is_subscription)
+  const payAsYouGoEntries = providerEntries.filter(([, settings]) => !settings.is_subscription)
   return (
     <div className="space-y-1.5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -975,11 +1266,15 @@ function ModelBinding({
         <div className="w-44 shrink-0">
           <select value={providerValue} onChange={(e) => onProviderChange(e.target.value)} className={inputClass}>
             {includeAuto && <option value="auto">{autoLabel ?? t('providersAutoDetect', lang)}</option>}
-            {providerEntries.map(([name, settings]) => (
-              <option key={name} value={name}>
-                {settings.display_name}
-              </option>
-            ))}
+            {/* Older engines don't flag subscription providers: keep a flat list. */}
+            {subscriptionEntries.length === 0 ? (
+              renderOptions(providerEntries)
+            ) : (
+              <>
+                <optgroup label={t('providersGroupSubscription', lang)}>{renderOptions(subscriptionEntries)}</optgroup>
+                <optgroup label={t('providersGroupPayAsYouGo', lang)}>{renderOptions(payAsYouGoEntries)}</optgroup>
+              </>
+            )}
           </select>
         </div>
         <div className="flex-1">
@@ -1230,11 +1525,14 @@ function RoleMenuItem({ label, active, onClick }: { label: string; active: boole
   )
 }
 
-function SmallButton({ children, disabled, onClick }: { children: React.ReactNode; disabled?: boolean; onClick: () => void }) {
+function SmallButton(
+  { children, disabled, title, onClick }: { children: React.ReactNode; disabled?: boolean; title?: string; onClick: () => void },
+) {
   return (
     <button
       type="button"
       disabled={disabled}
+      title={title}
       onClick={onClick}
       className={cn(
         'px-3 py-1.5 text-xs rounded-lg border transition-colors',
@@ -1248,17 +1546,24 @@ function SmallButton({ children, disabled, onClick }: { children: React.ReactNod
   )
 }
 
-function Switch({ checked, onChange, label }: { checked: boolean; onChange: (value: boolean) => void; label?: string }) {
+function Switch({ checked, onChange, label, disabled = false }: {
+  checked: boolean
+  onChange: (value: boolean) => void
+  label?: string
+  disabled?: boolean
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
         'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors',
         checked ? 'bg-[var(--color-accent)]' : 'bg-[var(--color-border)]',
+        disabled && 'opacity-50 cursor-not-allowed',
       )}
     >
       <span

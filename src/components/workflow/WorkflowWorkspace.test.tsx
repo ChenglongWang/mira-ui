@@ -1,5 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fetchJournalProfiles } from '@/services/journals'
+import { journalFixture } from '@/test/journalFixtures'
+
+vi.mock('@/services/journals', async (original) => ({ ...await original<typeof import('@/services/journals')>(), fetchJournalProfiles: vi.fn().mockResolvedValue([]) }))
 
 vi.mock('@/services/api', () => ({
   commandWorkflowProject: vi.fn(),
@@ -87,7 +91,7 @@ describe('WorkflowWorkspace module entry', () => {
       agentProfile: 'research',
     } as never)
     useSettingsStore.setState({ language: 'en', streamResponses: true })
-    useUiStore.setState({ agentPanelCollapsed: true })
+    useUiStore.setState({ agentPanelCollapsed: true, pendingModuleStart: null })
     useAgentStore.setState({
       connected: true,
       logsByProject: {},
@@ -125,6 +129,31 @@ describe('WorkflowWorkspace module entry', () => {
     render(<WorkflowWorkspace />)
     expect(screen.getByRole('button', { name: /Debug.*运行状态/ })).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByText('模块运行')).not.toBeVisible()
+  })
+
+  it('shows a goal example tailored to each workflow stage', () => {
+    useSettingsStore.setState({ language: 'zh' })
+    render(<WorkflowWorkspace />)
+
+    fireEvent.click(screen.getByRole('button', { name: /调研.*启动模块/ }))
+    expect(screen.getByLabelText('本次运行目标')).toHaveAttribute(
+      'placeholder',
+      '例如：调研该方向近三年的关键论文，并提出三个可验证的研究方向。',
+    )
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /实验.*启动模块/ }))
+    expect(screen.getByLabelText('本次运行目标')).toHaveAttribute(
+      'placeholder',
+      '例如：基于已有数据复现基线方案，对比两种方法，并用预设指标评估结果。',
+    )
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /结果交付.*启动模块/ }))
+    expect(screen.getByLabelText('本次运行目标')).toHaveAttribute(
+      'placeholder',
+      '例如：汇总已完成实验的关键结果与图表，生成一份结构清晰、可追溯的研究报告。',
+    )
   })
 
   it('keeps the experiment handoff discoverable until a completed research candidate is selected', () => {
@@ -229,6 +258,36 @@ describe('WorkflowWorkspace module entry', () => {
     expect(visiblePrompt).toContain('auditable reference cards')
   })
 
+  it('opens a promoted chat in the requested module and forwards its context attachment', async () => {
+    useUiStore.setState({ pendingModuleStart: {
+      projectId: 'PRJ-1', moduleType: 'delivery', intent: 'Continue from chat context/q.md', contextPath: 'context/q.md',
+    } })
+    render(<WorkflowWorkspace />)
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByLabelText('Goal for this run')).toHaveValue('Continue from chat context/q.md')
+    expect(useUiStore.getState().pendingModuleStart).toBeNull()
+  })
+
+  it('ignores a module start requested for another project', () => {
+    useUiStore.setState({ pendingModuleStart: { projectId: 'PRJ-2', moduleType: 'experiment', intent: 'x' } })
+    render(<WorkflowWorkspace />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(useUiStore.getState().pendingModuleStart).not.toBeNull()
+  })
+
+  it('sends the promoted context path with a started run', async () => {
+    useUiStore.setState({ pendingModuleStart: {
+      projectId: 'PRJ-1', moduleType: 'initiation', intent: 'Study it', contextPath: 'context/q.md',
+    } })
+    render(<WorkflowWorkspace />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Start and open module' }))
+    await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
+      moduleType: 'initiation',
+      moduleData: expect.objectContaining({ context_attachment_paths: ['context/q.md'], intent: 'Study it' }),
+    })))
+  })
+
   it('keeps the overview constrained to the viewport after opening a module and returning', () => {
     useWorkflowStore.setState({
       snapshots: { 'PRJ-1': snapshot },
@@ -268,12 +327,18 @@ describe('WorkflowWorkspace module entry', () => {
     })))
   })
 
-  it.each(['auto', 'manual'] as const)('persists %s mode with experiment limits and stopping conditions', async (mode) => {
-    useProjectStore.setState({ mode: 'manual' }) // legacy preference must not set the new default
+  it.each([['auto', 1], ['auto', 2], ['manual', 1], ['manual', 2]] as const)('persists %s execution and %s acceptance with experiment limits', async (mode, contractVersion) => {
+    useProjectStore.setState({ mode: 'manual', contractVersion: 2 }) // legacy preferences must not set the new defaults
     render(<WorkflowWorkspace />)
 
     fireEvent.click(screen.getByRole('button', { name: /Experiment.*Start module/i }))
     expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Compat' })).toHaveAttribute('aria-pressed', 'true')
+    const execution = screen.getByRole('group', { name: 'Experiment execution mode' })
+    const acceptance = screen.getByRole('group', { name: 'Experiment acceptance mode' })
+    expect(execution.parentElement).toBe(acceptance.parentElement)
+    expect(execution.parentElement).toHaveClass('grid-cols-2')
+    if (contractVersion === 2) fireEvent.click(screen.getByRole('button', { name: 'Strict' }))
     if (mode === 'manual') fireEvent.click(screen.getByRole('button', { name: 'Manual' }))
     fireEvent.click(screen.getByRole('button', { name: '+ Add stopping condition' }))
     fireEvent.change(screen.getByLabelText('Stopping metric 1'), {
@@ -300,6 +365,7 @@ describe('WorkflowWorkspace module entry', () => {
           confirmation_policy: { mode: 'required' },
           intent: 'Why?',
           experiment_execution_mode: mode,
+          experiment_contract_version: contractVersion,
           automation_policy: {
             logic: 'AND',
             goals: [{ metric: 'accuracy', operator: '>=', value: 0.95 }],
@@ -313,7 +379,8 @@ describe('WorkflowWorkspace module entry', () => {
     })
   })
 
-  it('starts a continued branch with inherited artifacts instead of leaving it queued', async () => {
+  it.each([false, true])('starts a continued branch with inherited artifacts and journal selection=%s', async (selectJournal) => {
+    vi.mocked(fetchJournalProfiles).mockResolvedValue([journalFixture])
     const completedSnapshot: WorkflowSnapshot = {
       ...snapshot,
       project_sequence: 2,
@@ -360,6 +427,10 @@ describe('WorkflowWorkspace module entry', () => {
       target: { value: 'Write a concise research report from the selected direction' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Journal Article/ }))
+    if (selectJournal) {
+      await waitFor(() => expect(screen.getByLabelText('Target journal')).toBeEnabled())
+      fireEvent.change(screen.getByLabelText('Target journal'), { target: { value: 'mrm' } })
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Start and open module' }))
 
     await waitFor(() => {
@@ -370,6 +441,7 @@ describe('WorkflowWorkspace module entry', () => {
           confirmation_policy: { mode: 'required' },
           delivery_format: 'paper_article',
           intent: 'Write a concise research report from the selected direction',
+          ...(selectJournal ? { target_journal: 'mrm', journal_profile_version: '2026-10-12' } : {}),
           output_path: 'result/exports/journal_article.docx',
           output_type: 'article_docx',
           parent_run_id: 'source-run',

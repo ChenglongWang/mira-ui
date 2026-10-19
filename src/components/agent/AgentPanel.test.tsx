@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { useSkillPluginsStore } from '@/stores/skillPluginsStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useWorkflowStore } from '@/stores/workflowStore'
+import { useKnowledgeStore } from '@/stores/knowledgeStore'
 
 const initialAgentState = useAgentStore.getState()
 const initialProjectState = useProjectStore.getState()
@@ -52,6 +53,45 @@ describe('AgentPanel keyboard behavior', () => {
     })
   })
 
+  it('explains a turn that hit the tool-call limit and offers to continue', () => {
+    const sendSpy = vi.spyOn(wsClient, 'send').mockImplementation(() => {})
+    useAgentStore.setState({
+      lastTurnEndBySession: { 'PRJ-0001': { turnId: 't1', stopReason: 'max_iterations' } },
+    })
+    render(<AgentPanel />)
+
+    expect(screen.getByText(/hit the tool-call limit/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+
+    const sent = sendSpy.mock.calls.map((call) => call[0]).filter((p) => p?.type === 'message')
+    expect(sent).toHaveLength(1)
+    expect(sent[0]).toMatchObject({ content: 'Continue from where you stopped.', session_id: 'PRJ-0001' })
+  })
+
+  it('shows no notice for ordinary endings or while the next turn runs', () => {
+    useAgentStore.setState({
+      lastTurnEndBySession: { 'PRJ-0001': { turnId: 't1', stopReason: 'completed' } },
+    })
+    const { rerender } = render(<AgentPanel />)
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+
+    act(() => useAgentStore.setState({
+      lastTurnEndBySession: { 'PRJ-0001': { turnId: 't1', stopReason: 'max_tokens' } },
+      streamingBySession: { 'PRJ-0001': true },
+    }))
+    rerender(<AgentPanel />)
+    expect(screen.queryByText(/cut off at the output length limit/)).not.toBeInTheDocument()
+  })
+
+  it('reports a budget stop without a continue button', () => {
+    useAgentStore.setState({
+      lastTurnEndBySession: { 'PRJ-0001': { turnId: 't1', stopReason: 'budget_exceeded' } },
+    })
+    render(<AgentPanel />)
+    expect(screen.getByText(/token budget or round limit/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+  })
+
   it('sends on Enter and keeps Shift+Enter for newline by default', () => {
     const sendSpy = vi.spyOn(wsClient, 'send').mockImplementation(() => {})
     render(<AgentPanel />)
@@ -86,6 +126,17 @@ describe('AgentPanel keyboard behavior', () => {
     expect(textarea).toHaveClass('h-10', 'min-h-10')
     expect(textarea).toHaveAttribute('rows', '1')
     expect(screen.getByRole('button', { name: 'Drag upward to expand the input' })).toHaveClass('cursor-ns-resize')
+  })
+
+  it('fills the Quick Chat composer from a home prompt without sending it', () => {
+    const sendSpy = vi.spyOn(wsClient, 'send').mockImplementation(() => {})
+    useProjectStore.setState({ appMode: 'normal' })
+    useChatStore.setState({ activeChatId: 'chat-test' })
+    useUiStore.setState({ agentDraftPrompt: 'Help outline a research question' })
+    render(<AgentPanel />)
+    expect(screen.getByRole('textbox')).toHaveValue('Help outline a research question')
+    expect(useUiStore.getState().agentDraftPrompt).toBeNull()
+    expect(sendSpy.mock.calls.filter(([payload]) => payload.type === 'message')).toHaveLength(0)
   })
 
   it('supports the legacy Shift+Enter send shortcut', () => {
@@ -151,7 +202,7 @@ describe('AgentPanel keyboard behavior', () => {
     })
     render(<AgentPanel />)
 
-    fireEvent.click(screen.getByRole('button', { name: '$ Skill' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Skill' }))
     fireEvent.click(screen.getByRole('button', { name: '$mrstation' }))
     const textarea = screen.getByRole('textbox')
     fireEvent.change(textarea, { target: { value: 'analyze this dataset' } })
@@ -362,7 +413,7 @@ describe('AgentPanel keyboard behavior', () => {
     expect(messageCall).not.toHaveProperty('agent_profile')
   })
 
-  it('opens project promotion without prefilling the research description', () => {
+  it('promotes a chat into a chosen workflow from the dropdown', () => {
     useChatStore.setState({
       chats: [{ id: 'chat-promote', title: 'MRI study', createdAt: 0, updatedAt: 0 }],
       activeChatId: 'chat-promote',
@@ -372,13 +423,25 @@ describe('AgentPanel keyboard behavior', () => {
     useAgentStore.setState({ logsByProject: { 'chat-promote': [] } })
 
     render(<AgentPanel />)
-    fireEvent.click(screen.getByRole('button', { name: 'Turn into project' }))
+    const trigger = screen.getByRole('button', { name: 'Turn into project' })
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu')
+    fireEvent.click(trigger)
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      expect.stringContaining('Research'),
+      expect.stringContaining('Experiment'),
+      expect.stringContaining('Delivery'),
+    ])
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' })
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(useUiStore.getState().promotion).toBeNull()
 
-    expect(useUiStore.getState()).toMatchObject({
-      newProjectOpen: true,
-      newProjectFromChatId: 'chat-promote',
-    })
-    expect(useUiStore.getState()).not.toHaveProperty('newProjectDescriptionPrefill')
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: /Experiment/ }))
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+    expect(useUiStore.getState().promotion).toEqual({ chatId: 'chat-promote', moduleType: 'experiment' })
   })
 
   it('does not show a global AUTO badge without an experiment Run', () => {
@@ -420,5 +483,57 @@ describe('AgentPanel keyboard behavior', () => {
     render(<AgentPanel />)
 
     expect(screen.queryByText('AUTO')).not.toBeInTheDocument()
+  })
+})
+
+describe('AgentPanel knowledge bases', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks()
+    useAgentStore.setState(initialAgentState, true)
+    useProjectStore.setState(initialProjectState, true)
+    useChatStore.setState(initialChatState, true)
+    useSettingsStore.setState({ ...initialSettingsState, language: 'en' }, true)
+    useUiStore.setState(initialUiState, true)
+    useWorkflowStore.setState(initialWorkflowState, true)
+    useAgentStore.setState({ connected: true, logsByProject: {} })
+    useKnowledgeStore.setState({
+      bases: [{ id: 'kb_a', name: 'Specs', description: '', created_at: '', updated_at: '', sources: 1, documents: 1, chunks: 3 }],
+      loaded: true,
+      loadBases: async () => {},
+      loadProjectBases: async () => {},
+      chatBases: { 'chat-kb': ['kb_a'] },
+      projectBases: { 'PRJ-0001': ['kb_a'] },
+    })
+  })
+
+  const sentMessage = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.map((call) => call[0] as Record<string, unknown>).find((p) => p?.type === 'message')
+
+  it('sends the chat selection with Quick Chat messages', () => {
+    const sendSpy = vi.spyOn(wsClient, 'send').mockImplementation(() => {})
+    useChatStore.setState({
+      chats: [{ id: 'chat-kb', title: '', createdAt: 0, updatedAt: 0 }],
+      activeChatId: 'chat-kb',
+      workspaceKey: 'ws',
+    })
+    useProjectStore.setState({ appMode: 'normal', selectedTaskId: null })
+    render(<AgentPanel />)
+
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'what is the latency budget?' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', shiftKey: false })
+    expect(sentMessage(sendSpy)).toEqual(expect.objectContaining({ selected_kb_ids: ['kb_a'] }))
+  })
+
+  it('leaves project messages to the project attachment', () => {
+    const sendSpy = vi.spyOn(wsClient, 'send').mockImplementation(() => {})
+    useProjectStore.setState({ selectedTaskId: 'PRJ-0001', mode: 'manual', agentProfile: 'research' })
+    render(<AgentPanel />)
+
+    expect(screen.getByRole('button', { name: 'Knowledge' })).toHaveTextContent('1')
+    const textarea = screen.getByRole('textbox')
+    fireEvent.change(textarea, { target: { value: 'hello' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', shiftKey: false })
+    expect(sentMessage(sendSpy)).not.toHaveProperty('selected_kb_ids')
   })
 })

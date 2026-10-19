@@ -199,6 +199,8 @@ export interface ProjectTask {
 /* ── Modular workflow v1 ───────────────────────── */
 
 export type WorkflowModuleType = 'initiation' | 'planning' | 'experiment' | 'delivery'
+// Workflows a user can start directly; planning is reached only as an upstream module.
+export type StartableModuleType = Extract<WorkflowModuleType, 'initiation' | 'experiment' | 'delivery'>
 export type WorkflowRunStatus =
   | 'created' | 'queued' | 'running' | 'waiting_input'
   | 'paused' | 'completed' | 'failed' | 'cancelled'
@@ -530,6 +532,7 @@ export interface WsMessage {
   turn_id?: string
   request_id?: string
   selected_skill_ids?: string[]
+  selected_kb_ids?: string[]
   approved?: boolean
   // Interactive plan-mode payloads.
   answers?: Record<string, string | string[]>
@@ -540,11 +543,44 @@ export interface WsMessage {
 }
 
 export interface WsResponse {
-  type: 'response' | 'progress' | 'tool_call' | 'error' | 'stream_delta' | 'stream_end' | 'stop_ack' | 'skill_fallback_required'
+  type: 'response' | 'progress' | 'tool_call' | 'error' | 'stream_delta' | 'stream_end' | 'stop_ack' | 'skill_fallback_required' | 'skill_loaded' | 'token_usage' | 'turn_started' | 'turn_finished'
   session_id?: string
   content: string
   media?: string[]
   metadata?: Record<string, unknown>
+}
+
+/** Why the engine ended a turn (turn_finished.metadata.stop_reason). */
+export type TurnStopReason =
+  | 'completed'
+  | 'max_iterations'
+  | 'max_tokens'
+  | 'waiting_input'
+  | 'budget_exceeded'
+  | 'stopped'
+  | 'error'
+
+export interface TurnEnd {
+  turnId: string
+  stopReason: TurnStopReason
+}
+
+/** A turn the engine is still running (GET /sessions/{id}/turns). */
+export interface ActiveTurn {
+  turn_id: string
+  workflow_run_id: string | null
+}
+
+export interface SkillLoadEvent {
+  id: string
+  loaded_at: string
+  skill_name: string
+  source: 'manual' | 'auto' | 'recent' | 'always' | 'read_file'
+  partial: boolean
+  run_id?: string | null
+  module_type?: string | null
+  turn_id?: string | null
+  agent?: string | null
 }
 
 export type SkillPluginScope = 'global' | 'project'
@@ -591,3 +627,21 @@ export interface SkillPlugin {
   groups: SkillPluginGroup[]
   skills: SkillPluginSkill[]
 }
+
+export interface ProjectFileInfo {
+  name: string
+  path: string
+  size: number
+  mtime: number
+  is_dir: boolean
+}
+
+/** File row in the explorer; includes project routing for workspace-wide views. */
+export interface ProjectFileEntry extends ProjectFileInfo {
+  projectId: string
+  projectLabel?: string
+  /** Path relative to the project root (used for API calls). */
+  relativePath: string
+}
+
+export type FileExplorerScope = 'all' | 'project'

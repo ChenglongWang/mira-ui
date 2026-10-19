@@ -1,14 +1,18 @@
 import { useSettingsStore } from '@/stores/settingsStore'
 import { createUuid } from '@/lib/uuid'
+import { withEngineAuth } from './engineAuth'
 import type {
+  ActiveTurn,
   AgentProfile,
   ContractVersion,
   LogEntry,
   SkillPlugin,
+  SkillLoadEvent,
   SkillPluginScope,
   SkillPluginTargetType,
   TaskPlanContract,
   TaskPlan,
+  ProjectFileInfo,
 } from '@/types'
 
 function getApiUrl(): string {
@@ -334,6 +338,37 @@ export async function fetchSessionHistory(sessionId: string, workflowRunId?: str
   }
 }
 
+/** Turns still running for a session, or null when the engine cannot say (older engine, offline). */
+export async function fetchActiveTurns(sessionId: string): Promise<ActiveTurn[] | null> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/turns`)
+    if (!resp.ok) return null
+    const data = await resp.json()
+    if (!Array.isArray(data?.active)) return null
+    return (data.active as unknown[]).flatMap((raw) => {
+      const row = raw as Record<string, unknown> | null
+      if (!row || typeof row.turn_id !== 'string') return []
+      const runId = typeof row.workflow_run_id === 'string' && row.workflow_run_id ? row.workflow_run_id : null
+      return [{ turn_id: row.turn_id, workflow_run_id: runId }]
+    })
+  } catch {
+    return null
+  }
+}
+
+export async function fetchTokenUsage(sessionId: string): Promise<unknown> {
+  const response = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/usage`)
+  if (!response.ok) throw new Error('Token usage unavailable')
+  return response.json()
+}
+
+export async function fetchSkillHistory(sessionId: string, cursor?: number): Promise<{ events: SkillLoadEvent[]; next_cursor: number | null }> {
+  const query = cursor === undefined ? '' : `?cursor=${cursor}`
+  const response = await fetch(`${getApiUrl()}/sessions/${encodeURIComponent(sessionId)}/skills${query}`)
+  if (!response.ok) throw new Error(response.status === 404 ? 'unsupported' : 'unavailable')
+  return response.json()
+}
+
 export interface DeleteProjectResult {
   deleted: boolean
   removed: boolean
@@ -468,6 +503,60 @@ export async function deleteProjectFiles(sessionId: string): Promise<boolean> {
   return (await deleteProject(sessionId, { deleteFiles: true })).deleted
 }
 
+export type FetchProjectFilesResult =
+  | { ok: true; files: ProjectFileInfo[]; truncated: boolean }
+  | { ok: false; status: number; error?: string }
+
+function normalizeProjectFileRows(raw: unknown): ProjectFileInfo[] {
+  if (!Array.isArray(raw)) return []
+  const rows: ProjectFileInfo[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const row = item as Record<string, unknown>
+    const path = typeof row.path === 'string' ? row.path : ''
+    if (!path) continue
+    const name = typeof row.name === 'string' ? row.name : path.split('/').pop() ?? path
+    rows.push({
+      name,
+      path,
+      size: typeof row.size === 'number' ? row.size : 0,
+      mtime: typeof row.mtime === 'number' ? row.mtime : 0,
+      is_dir: row.is_dir === true,
+    })
+  }
+  return rows
+}
+
+export async function fetchProjectFilesResult(sessionId: string): Promise<FetchProjectFilesResult> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/projects/${encodeURIComponent(sessionId)}/files`)
+    if (!resp.ok) {
+      let error: string | undefined
+      try {
+        const data = await resp.json()
+        error = typeof data?.error === 'string' ? data.error : undefined
+      } catch {
+        try {
+          error = (await resp.text()).trim() || undefined
+        } catch {
+          error = undefined
+        }
+      }
+      return { ok: false, status: resp.status, error }
+    }
+    const data = await resp.json()
+    return { ok: true, files: normalizeProjectFileRows(data?.files), truncated: data?.truncated === true }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : undefined
+    return { ok: false, status: 0, error: message }
+  }
+}
+
+export async function fetchProjectFiles(sessionId: string): Promise<ProjectFileInfo[]> {
+  const result = await fetchProjectFilesResult(sessionId)
+  return result.ok ? result.files : []
+}
+
 export interface UploadedProjectFile {
   name: string
   path: string
@@ -563,7 +652,13 @@ export async function validateDataPath(path: string, purpose?: 'experiment_input
 export function getProjectArtifactUrl(sessionId: string, artifactPath: string): string {
   const sid = encodeURIComponent(sessionId)
   const path = encodeURIComponent(artifactPath)
-  return `${getApiUrl()}/projects/${sid}/artifacts?path=${path}`
+  return withEngineAuth(`${getApiUrl()}/projects/${sid}/artifacts?path=${path}`)
+}
+
+export function getArtifactDownloadUrl(url: string): string {
+  const downloadUrl = new URL(url, window.location.href)
+  downloadUrl.searchParams.set('download', '1')
+  return downloadUrl.toString()
 }
 
 export async function fetchSkillPlugins(sessionId: string): Promise<SkillPlugin[]> {
@@ -703,7 +798,7 @@ export async function fetchWorkflowArtifact(
 }
 
 export function getWorkflowArtifactContentUrl(projectId: string, artifactId: string): string {
-  return `${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/content`
+  return withEngineAuth(`${getApiUrl()}/workflow/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/content`)
 }
 
 export async function commandWorkflowRun(

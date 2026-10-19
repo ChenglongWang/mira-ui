@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { JournalTargetSelect } from './JournalTargetSelect'
+import { journalSelection, type JournalProfile } from '@/services/journals'
 
 import { useProjectStore } from '@/stores/projectStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -30,6 +32,7 @@ import {
 } from '@/lib/workflowCandidates'
 import { PipelineOverview } from './PipelineOverview'
 import { ExperimentExecutionMode } from './ExperimentExecutionMode'
+import { ExperimentContractMode } from './ExperimentContractMode'
 import { ExperimentInputPaths } from './ExperimentInputPaths'
 import { WorkflowDebugPanel } from './WorkflowDebugPanel'
 
@@ -77,6 +80,8 @@ const DELIVERY_FORMAT_OPTIONS: Array<{
   { format: 'experiment_report', icon: '📋', en: 'Experiment Report', zh: '实验报告' },
   { format: 'paper_article', icon: '📄', en: 'Journal Article (.docx)', zh: '期刊论文（.docx）' },
   { format: 'presentation', icon: '📊', en: 'Presentation (PDF)', zh: '演示文稿（PDF）' },
+  { format: 'slides', icon: '🎞️', en: 'Slides (HTML)', zh: '幻灯片（HTML）' },
+  { format: 'notebook', icon: '📓', en: 'Jupyter Notebook (.ipynb)', zh: 'Jupyter Notebook（.ipynb）' },
   { format: 'metadata', icon: '📦', en: 'Project Metadata (ZIP)', zh: '项目元数据（ZIP）' },
 ]
 
@@ -150,6 +155,22 @@ const STATUS_STYLE: Record<WorkflowRunStatus, string> = {
 
 function moduleMeta(type: WorkflowModuleType) {
   return MODULES.find((item) => item.type === type) ?? MODULES[0]
+}
+
+function moduleGoalPlaceholder(type: WorkflowModuleType, lang: 'zh' | 'en'): string {
+  if (type === 'experiment') {
+    return lang === 'zh'
+      ? '例如：基于已有数据复现基线方案，对比两种方法，并用预设指标评估结果。'
+      : 'Example: Reproduce a baseline on the available data, compare two methods, and evaluate them with predefined metrics.'
+  }
+  if (type === 'delivery') {
+    return lang === 'zh'
+      ? '例如：汇总已完成实验的关键结果与图表，生成一份结构清晰、可追溯的研究报告。'
+      : 'Example: Summarize the completed experiments, key results, and figures into a clear, traceable research report.'
+  }
+  return lang === 'zh'
+    ? '例如：调研该方向近三年的关键论文，并提出三个可验证的研究方向。'
+    : 'Example: Review the last three years of key papers and propose three testable directions.'
 }
 
 const NEXT_MODULE: Partial<Record<WorkflowModuleType, WorkflowModuleType>> = {
@@ -290,10 +311,14 @@ export function WorkflowWorkspace() {
   const [maxExperiments, setMaxExperiments] = useState('')
   const [maxTokens, setMaxTokens] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
+  const [targetJournal, setTargetJournal] = useState<JournalProfile | null>(null)
   const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
+  const [experimentContractVersion, setExperimentContractVersion] = useState<1 | 2>(1)
   const [inputPaths, setInputPaths] = useState<string[]>([''])
   const [inputPathsValid, setInputPathsValid] = useState(true)
   const [startError, setStartError] = useState<string | null>(null)
+  const [contextAttachmentPath, setContextAttachmentPath] = useState<string | null>(null)
+  const pendingModuleStart = useUiStore((state) => state.pendingModuleStart)
   const selectedRun = useMemo(
     () => snapshot?.runs.find((run) => run.run_id === selectedRunId) ?? null,
     [selectedRunId, snapshot?.runs],
@@ -313,6 +338,18 @@ export function WorkflowWorkspace() {
     : null
   const mustSelectRunCandidate = selectedRunCandidates.length > 1 && !selectedRunCandidate
   const nextSelectedModule = selectedRun ? NEXT_MODULE[selectedRun.module_type] : undefined
+
+  useEffect(() => {
+    if (!projectId || pendingModuleStart?.projectId !== projectId) return
+    // Promoted Quick Chats land directly in the chosen module's start dialog.
+    beginModule(pendingModuleStart.moduleType)
+    setRunIntent(pendingModuleStart.intent)
+    setContextAttachmentPath(pendingModuleStart.contextPath ?? null)
+    useUiStore.getState().consumeModuleStart()
+    // beginModule only resets local dialog state; re-run solely for a new request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingModuleStart, projectId])
+
   if (!projectId) return null
 
   const beginModule = (
@@ -322,6 +359,7 @@ export function WorkflowWorkspace() {
   ) => {
     setStartingModule(moduleType)
     setExperimentMode('auto')
+    setExperimentContractVersion(1)
     setInputPaths([''])
     setInputPathsValid(true)
     setContinuationSource(sourceRun
@@ -349,6 +387,7 @@ export function WorkflowWorkspace() {
     setMaxTokens('')
     setDeliveryFormat(null)
     setStartError(null)
+    setContextAttachmentPath(null)
   }
 
   const startExistingRun = async (run: WorkflowRun) => {
@@ -414,6 +453,7 @@ export function WorkflowWorkspace() {
     const moduleData: Record<string, unknown> = {
       confirmation_policy: { mode: 'required' },
     }
+    if (contextAttachmentPath) moduleData.context_attachment_paths = [contextAttachmentPath]
     if (continuationSource) {
       moduleData.upstream_selection = {
         module_type: continuationSource.moduleType,
@@ -440,6 +480,7 @@ export function WorkflowWorkspace() {
     if (startingModule === 'experiment') {
       if (!inputPathsValid) return
       moduleData.experiment_execution_mode = experimentMode
+      moduleData.experiment_contract_version = experimentContractVersion
       const paths = [...new Set(inputPaths.map((p) => p.trim()).filter(Boolean))]
       if (paths.length) moduleData.external_read_paths = paths
       const normalizedGoals: AutomationGoal[] = []
@@ -493,6 +534,7 @@ export function WorkflowWorkspace() {
       }
       const config = getExportConfig(deliveryFormat)
       moduleData.delivery_format = deliveryFormat
+      if (deliveryFormat === 'paper_article') Object.assign(moduleData, journalSelection(targetJournal))
       moduleData.output_path = config.outputPath
       moduleData.output_type = config.outputType
     }
@@ -521,7 +563,7 @@ export function WorkflowWorkspace() {
         lang,
       )
       const startPrompt = moduleType === 'delivery' && deliveryFormat && task
-        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true })}`
+        ? `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true, targetJournal: targetJournal?.id })}`
         : buildModuleStartPrompt(moduleType, intent, moduleData, promptLanguage)
       useAgentStore.getState().addLog(conversationId, {
         id: `module-start-${Date.now()}`,
@@ -650,7 +692,7 @@ export function WorkflowWorkspace() {
                 value={runIntent}
                 disabled={creating !== null}
                 onChange={(event) => setRunIntent(event.target.value)}
-                placeholder={lang === 'zh' ? '例如：调研该方向近三年的关键论文，并提出三个可验证的研究方向。' : 'Example: Review the last three years of key papers and propose three testable directions.'}
+                placeholder={moduleGoalPlaceholder(startingModule, lang)}
                 className="mt-2 min-h-32 w-full resize-y rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-3 py-2 text-sm leading-relaxed text-[var(--color-text-primary)] outline-none focus:border-[var(--color-accent)] disabled:opacity-60"
               />
 
@@ -732,7 +774,10 @@ export function WorkflowWorkspace() {
 
               {startingModule === 'experiment' && (
                 <div className="mt-4 space-y-4">
-                  <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={creating !== null} />
+                  <div className="mt-4 grid grid-cols-2 gap-4">
+                    <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={creating !== null} />
+                    <ExperimentContractMode value={experimentContractVersion} onChange={setExperimentContractVersion} disabled={creating !== null} />
+                  </div>
                   <ExperimentInputPaths paths={inputPaths} onChange={setInputPaths} onValidChange={setInputPathsValid} disabled={creating !== null} />
                   <div>
                     <div className="flex items-center justify-between gap-3">
@@ -885,6 +930,7 @@ export function WorkflowWorkspace() {
                       )
                     })}
                   </div>
+                  {deliveryFormat === 'paper_article' && <JournalTargetSelect value={targetJournal} onChange={setTargetJournal} disabled={creating !== null} />}
                 </fieldset>
               )}
 

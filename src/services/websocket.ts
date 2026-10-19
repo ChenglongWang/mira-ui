@@ -1,12 +1,26 @@
 import type { WsMessage, WsResponse } from '@/types'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { t } from '@/i18n'
+import { recordDiagnostic } from './diagnostics'
+import { createUuid } from '@/lib/uuid'
+import { refreshManagedEngineTokens, withEngineAuth } from './engineAuth'
 
 type MessageHandler = (msg: WsResponse) => void
 type StatusHandler = (connected: boolean, detail: string | null) => void
 
 function getWsUrl(): string {
   return useSettingsStore.getState().wsUrl
+}
+
+/** Ask the engine for turn_started/turn_finished; it withholds them from older clients. */
+function withTurnEvents(wsUrl: string): string {
+  try {
+    const url = new URL(wsUrl)
+    url.searchParams.set('turn_events', '1')
+    return url.toString()
+  } catch {
+    return wsUrl
+  }
 }
 
 function currentLanguage() {
@@ -56,7 +70,9 @@ class WebSocketClient {
 
   send(msg: WsMessage): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg))
+      const requestId = msg.request_id || createUuid()
+      recordDiagnostic('websocket.sent', { operation: msg.type, request_id: requestId })
+      this.ws.send(JSON.stringify({ ...msg, request_id: requestId }))
     }
   }
 
@@ -73,13 +89,14 @@ class WebSocketClient {
 
   private _connect(): void {
     try {
-      this.ws = new WebSocket(getWsUrl())
+      this.ws = new WebSocket(withEngineAuth(withTurnEvents(getWsUrl())))
     } catch {
       this._scheduleReconnect()
       return
     }
 
     this.ws.onopen = () => {
+      recordDiagnostic('websocket.connected')
       this.reconnectDelay = INITIAL_RECONNECT_DELAY
       this.lastDisconnectDetail = null
       this.statusHandlers.forEach((h) => h(true, null))
@@ -93,18 +110,23 @@ class WebSocketClient {
     }
 
     this.ws.onclose = (event) => {
+      recordDiagnostic('websocket.closed', { code: event?.code ?? 0 }, undefined, 'WARNING')
       this.lastDisconnectDetail = describeCloseEvent(event, getWsUrl())
       this.statusHandlers.forEach((h) => h(false, this.lastDisconnectDetail))
       this._scheduleReconnect()
     }
 
     this.ws.onerror = () => {
+      recordDiagnostic('websocket.failed', {}, undefined, 'ERROR')
       this.ws?.close()
     }
   }
 
   private _scheduleReconnect(): void {
     if (!this.shouldReconnect) return
+    // A rejected handshake looks like any other close; pick up a rotated
+    // desktop or re-attached Remote-SSH token before trying again.
+    void refreshManagedEngineTokens()
     this.reconnectTimer = setTimeout(() => {
       this._connect()
     }, this.reconnectDelay)

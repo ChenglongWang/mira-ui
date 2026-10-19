@@ -1,5 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { fetchJournalProfiles } from '@/services/journals'
+import { journalFixture } from '@/test/journalFixtures'
+
+vi.mock('@/services/journals', async (original) => ({ ...await original<typeof import('@/services/journals')>(), fetchJournalProfiles: vi.fn().mockResolvedValue([]) }))
 
 vi.mock('@/services/api', () => ({
   commandWorkflowProject: vi.fn(),
@@ -121,20 +125,26 @@ describe('ModuleStageControls', () => {
     expect(screen.getByText('2 artifacts')).toBeInTheDocument()
   })
 
-  it.each(['auto', 'manual'] as const)('starts a downstream experiment with its own %s mode', async (mode) => {
+  it.each([['auto', 1], ['auto', 2], ['manual', 1], ['manual', 2]] as const)('starts a downstream experiment with %s execution and %s acceptance', async (mode, contractVersion) => {
     const run = makeRun({ outputs: ['artifact-1'] })
     const snapshot = makeSnapshot(run)
-    useProjectStore.setState({ mode: 'manual' })
+    useProjectStore.setState({ mode: 'manual', contractVersion: 2 })
     useWorkflowStore.setState({ snapshots: { 'PRJ-1': snapshot }, selectedRunByProject: { 'PRJ-1': run.run_id } })
     vi.mocked(fetchWorkflowSnapshot).mockResolvedValue(snapshot)
     vi.mocked(createWorkflowRun).mockResolvedValue({ run_id: 'experiment-run', project_sequence: 3 })
     render(<ModuleStageControls />)
     fireEvent.click(screen.getByRole('button', { name: /Continue to Experiment/ }))
     expect(screen.getByRole('button', { name: 'Auto' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'Compat' })).toHaveAttribute('aria-pressed', 'true')
+    const execution = screen.getByRole('group', { name: 'Experiment execution mode' })
+    const acceptance = screen.getByRole('group', { name: 'Experiment acceptance mode' })
+    expect(execution.parentElement).toBe(acceptance.parentElement)
+    expect(execution.parentElement).toHaveClass('grid-cols-2')
+    if (contractVersion === 2) fireEvent.click(screen.getByRole('button', { name: 'Strict' }))
     if (mode === 'manual') fireEvent.click(screen.getByRole('button', { name: 'Manual' }))
     fireEvent.click(screen.getByRole('button', { name: 'Create branch and start' }))
     await waitFor(() => expect(createWorkflowRun).toHaveBeenCalledWith('PRJ-1', expect.objectContaining({
-      moduleType: 'experiment', moduleData: expect.objectContaining({ experiment_execution_mode: mode }),
+      moduleType: 'experiment', moduleData: expect.objectContaining({ experiment_execution_mode: mode, experiment_contract_version: contractVersion }),
     })))
   })
 
@@ -156,7 +166,8 @@ describe('ModuleStageControls', () => {
     })))
   })
 
-  it('continues to Delivery inside the module page with one of the four legacy formats', async () => {
+  it.each([false, true])('continues to Delivery with journal selection=%s', async (selectJournal) => {
+    vi.mocked(fetchJournalProfiles).mockResolvedValue([journalFixture])
     const run = makeRun({ module_type: 'experiment' })
     const snapshot = makeSnapshot(run)
     useProjectStore.setState({ activeStage: 'experiment' })
@@ -185,6 +196,10 @@ describe('ModuleStageControls', () => {
       target: { value: 'Prepare the manuscript for journal submission' },
     })
     fireEvent.click(screen.getByRole('button', { name: /Journal Article/ }))
+    if (selectJournal) {
+      await waitFor(() => expect(screen.getByLabelText('Target journal')).toBeEnabled())
+      fireEvent.change(screen.getByLabelText('Target journal'), { target: { value: 'mrm' } })
+    }
     fireEvent.click(screen.getByRole('button', { name: 'Create branch and start' }))
 
     await waitFor(() => {
@@ -196,6 +211,7 @@ describe('ModuleStageControls', () => {
           confirmation_policy: { mode: 'required' },
           delivery_format: 'paper_article',
           intent: 'Prepare the manuscript for journal submission',
+          ...(selectJournal ? { target_journal: 'mrm', journal_profile_version: '2026-10-12' } : {}),
           output_path: 'result/exports/journal_article.docx',
           output_type: 'article_docx',
           parent_run_id: 'source-run',

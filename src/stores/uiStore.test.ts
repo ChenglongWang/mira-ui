@@ -95,17 +95,19 @@ describe('uiStore.layout + modals', () => {
     expect(useUiStore.getState().agentPanelWidth).toBe(AGENT_PANEL_WIDTH.min)
   })
 
-  it('opens and closes the new-project modal with prefill', () => {
-    useUiStore.getState().openNewProject({ fromChatId: 'chat-1' })
-    expect(useUiStore.getState()).toMatchObject({
-      newProjectOpen: true,
-      newProjectFromChatId: 'chat-1',
-    })
-    useUiStore.getState().closeNewProject()
-    expect(useUiStore.getState()).toMatchObject({
-      newProjectOpen: false,
-      newProjectFromChatId: null,
-    })
+  it('opens and closes a Quick Chat promotion for a workflow', () => {
+    useUiStore.getState().openPromotion('chat-1', 'experiment')
+    expect(useUiStore.getState().promotion).toEqual({ chatId: 'chat-1', moduleType: 'experiment' })
+    useUiStore.getState().closePromotion()
+    expect(useUiStore.getState().promotion).toBeNull()
+  })
+
+  it('requests and consumes a module start', () => {
+    const request = { projectId: 'PRJ-1', moduleType: 'delivery' as const, intent: 'Write it up', contextPath: 'context/a.md' }
+    useUiStore.getState().requestModuleStart(request)
+    expect(useUiStore.getState().pendingModuleStart).toEqual(request)
+    useUiStore.getState().consumeModuleStart()
+    expect(useUiStore.getState().pendingModuleStart).toBeNull()
   })
 
   it('opens and closes the skills/plugins modal', () => {
@@ -124,5 +126,40 @@ describe('uiStore.layout + modals', () => {
     expect(useUiStore.getState().updateBannerDismissed).toBe(true)
     useUiStore.getState().resetUpdateBannerDismissed()
     expect(useUiStore.getState().updateBannerDismissed).toBe(false)
+  })
+})
+
+describe('uiStore.quickChatLayout', () => {
+  beforeEach(() => {
+    useUiStore.setState(initialState, true)
+  })
+
+  it('focusQuickChatWorkbench collapses center and expands the agent workbench', () => {
+    useUiStore.setState({
+      chatCenterCollapsed: false,
+      agentPanelCollapsed: true,
+      workbenchTab: 'files',
+      chatCenterPreviewFile: { projectId: 'P', name: 'a', path: 'a', relativePath: 'a', size: 0, mtime: 0, is_dir: false },
+    })
+    useUiStore.getState().focusQuickChatWorkbench()
+    const s = useUiStore.getState()
+    expect(s.chatCenterCollapsed).toBe(true)
+    expect(s.agentPanelCollapsed).toBe(false)
+    expect(s.workbenchTab).toBe('agent')
+    expect(s.chatCenterPreviewFile).toBeNull()
+  })
+
+  it('setChatCenterPreviewFile expands center when previewing a file', () => {
+    useUiStore.setState({ chatCenterCollapsed: true })
+    useUiStore.getState().setChatCenterPreviewFile({
+      projectId: 'P',
+      name: 'out.csv',
+      path: 'out.csv',
+      relativePath: 'out.csv',
+      size: 1,
+      mtime: 1,
+      is_dir: false,
+    })
+    expect(useUiStore.getState().chatCenterCollapsed).toBe(false)
   })
 })

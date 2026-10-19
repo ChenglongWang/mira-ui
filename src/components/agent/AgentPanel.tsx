@@ -4,14 +4,17 @@ import { useProjectStore } from '@/stores/projectStore'
 import { useWorkflowStore } from '@/stores/workflowStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useUiStore } from '@/stores/uiStore'
-import { useSettingsStore } from '@/stores/settingsStore'
+import { useSettingsStore, type Language } from '@/stores/settingsStore'
 import { wsClient } from '@/services/websocket'
 import { fetchSessionHistory } from '@/services/api'
 import { LogEntry } from './LogEntry'
 import { formatTime } from '@/lib/utils'
-import type { LogEntry as AgentLogEntry } from '@/types'
-import { t } from '@/i18n'
+import type { LogEntry as AgentLogEntry, TurnStopReason } from '@/types'
+import { t, type I18nKey } from '@/i18n'
 import { GLOBAL_SKILLS_SESSION_ID, useSkillPluginsStore } from '@/stores/skillPluginsStore'
+import { useKnowledgeStore } from '@/stores/knowledgeStore'
+import { KnowledgePicker } from '@/components/knowledge/KnowledgePicker'
+import { PIPELINE_STAGES } from '@/components/workflow/PipelineOverview'
 
 function createClientId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
@@ -58,10 +61,12 @@ function ChatComposer({
   isStopping,
   lang,
   availableSkills,
+  knowledgeScope,
   onSend,
   onStop,
 }: {
   sessionId: string | null
+  knowledgeScope: 'project' | 'chat'
   isStreaming: boolean
   isStopping: boolean
   lang: ReturnType<typeof useSettingsStore.getState>['language']
@@ -76,12 +81,21 @@ function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const resizeDragRef = useRef<{ pointerId: number; startY: number; startHeight: number } | null>(null)
   const sendShortcut = useSettingsStore((s) => s.sendShortcut ?? 'enter')
+  const draftPrompt = useUiStore((s) => s.agentDraftPrompt)
+  const appMode = useProjectStore((s) => s.appMode)
 
   useEffect(() => {
     setInput('')
     setSelectedSkills([])
     setSkillPickerOpen(false)
   }, [sessionId])
+
+  useEffect(() => {
+    if (appMode !== 'normal' || !sessionId || draftPrompt === null) return
+    setInput(draftPrompt)
+    useUiStore.getState().setAgentDraftPrompt(null)
+    textareaRef.current?.focus()
+  }, [appMode, sessionId, draftPrompt])
 
   const resizeTextarea = () => {
     const textarea = textareaRef.current
@@ -165,7 +179,7 @@ function ChatComposer({
             className="h-10 rounded-lg border border-[var(--color-border)] px-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
             title={t('selectSkill', lang)}
           >
-            $ Skill
+            Skill
           </button>
           {skillPickerOpen && (
             <div className="absolute bottom-12 left-0 z-30 w-64 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] p-2 shadow-xl">
@@ -197,6 +211,7 @@ function ChatComposer({
             </div>
           )}
         </div>
+        <KnowledgePicker sessionId={sessionId} scope={knowledgeScope} lang={lang} disabled={isStopping} />
         <div className="relative min-w-0 flex-1 self-end">
           <textarea
             ref={textareaRef}
@@ -266,8 +281,137 @@ function ChatComposer({
   )
 }
 
-export function AgentPanel() {
-  const { connected, logsByProject, hydrateLogs, streamingBySession, stoppingBySession } = useAgentStore()
+/**
+ * Run mode badge, promote-to-workflow menu and session id for the active
+ * conversation. The workbench shows these in its tab strip; a standalone
+ * AgentPanel shows them in its own header.
+ */
+export function AgentPanelActions() {
+  const lang = useSettingsStore((s) => s.language)
+  const appMode = useProjectStore((s) => s.appMode)
+  const selectedTaskId = useProjectStore((s) => s.selectedTaskId)
+  const selectedWorkflowRun = useWorkflowStore((s) => {
+    const runId = selectedTaskId ? s.selectedRunByProject[selectedTaskId] : null
+    return selectedTaskId && runId
+      ? s.snapshots[selectedTaskId]?.runs.find((run) => run.run_id === runId)
+      : undefined
+  })
+  const activeChatId = useChatStore((s) => s.activeChatId)
+  const openPromotion = useUiStore((s) => s.openPromotion)
+  const [promoteMenuOpen, setPromoteMenuOpen] = useState(false)
+  const isChat = appMode === 'normal'
+  const sessionId = isChat ? activeChatId : selectedTaskId
+  const experimentMode = appMode === 'project' && selectedWorkflowRun?.module_type === 'experiment'
+    ? (selectedWorkflowRun.module_data.experiment_execution_mode === 'manual' ? 'MANUAL' : 'AUTO')
+    : null
+
+  return (
+    <>
+      {experimentMode && (
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] font-medium">
+          {experimentMode}
+        </span>
+      )}
+      {sessionId && isChat && (
+        <div
+          className="relative ml-auto"
+          onKeyDown={(event) => { if (event.key === 'Escape') setPromoteMenuOpen(false) }}
+        >
+          <button
+            onClick={() => setPromoteMenuOpen((open) => !open)}
+            title={t('promoteToProjectHint', lang)}
+            aria-haspopup="menu"
+            aria-expanded={promoteMenuOpen}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-[var(--color-accent)] border border-[var(--color-accent)]/30 hover:bg-[var(--color-accent)]/10 transition-colors"
+          >
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+            {t('promoteToProject', lang)}
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {promoteMenuOpen && (
+            <>
+              <button
+                type="button"
+                aria-label={t('cancel', lang)}
+                tabIndex={-1}
+                className="fixed inset-0 z-10 cursor-default"
+                onClick={() => setPromoteMenuOpen(false)}
+              />
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-20 mt-1 min-w-[180px] rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)] py-1 shadow-xl"
+              >
+                {PIPELINE_STAGES.map((stage) => (
+                  <button
+                    key={stage.moduleType}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setPromoteMenuOpen(false)
+                      openPromotion(sessionId, stage.moduleType)
+                    }}
+                    className="flex w-full items-start gap-2 px-3 py-1.5 text-left hover:bg-[var(--color-bg-hover)]"
+                  >
+                    <span aria-hidden="true">{stage.icon}</span>
+                    <span className="min-w-0">
+                      <span className="block text-xs text-[var(--color-text-primary)]">{lang === 'zh' ? stage.zh : stage.en}</span>
+                      <span className="block text-[10px] text-[var(--color-text-muted)]">{lang === 'zh' ? stage.zhHint : stage.enHint}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      {sessionId && appMode === 'project' && (
+        <span className="ml-auto text-[10px] font-mono text-[var(--color-text-muted)]">
+          {sessionId}
+        </span>
+      )}
+    </>
+  )
+}
+
+const TURN_END_NOTICES: Partial<Record<TurnStopReason, I18nKey>> = {
+  max_iterations: 'turnEndMaxIterations',
+  max_tokens: 'turnEndMaxTokens',
+  budget_exceeded: 'turnEndBudgetExceeded',
+}
+// Endings the user can resume by just asking Mira to carry on.
+const CONTINUABLE: ReadonlySet<TurnStopReason> = new Set(['max_iterations', 'max_tokens'])
+
+/** Explains a turn that ended before the task did; other endings speak for themselves. */
+function TurnEndNotice({ reason, lang, onContinue }: {
+  reason: TurnStopReason
+  lang: Language
+  onContinue?: () => void
+}) {
+  const message = TURN_END_NOTICES[reason]
+  if (!message) return null
+  return (
+    <div className="mx-4 my-2 flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2" role="status">
+      <p className="flex-1 text-xs text-[var(--color-text-primary)]">{t(message, lang)}</p>
+      {onContinue && CONTINUABLE.has(reason) && (
+        <button
+          type="button"
+          onClick={onContinue}
+          className="shrink-0 rounded-md bg-[var(--color-accent)] px-3 py-1 text-xs text-white"
+        >
+          {t('turnContinue', lang)}
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function AgentPanel({ showHeader = true }: { showHeader?: boolean }) {
+  const { connected, logsByProject, hydrateLogs, streamingBySession, stoppingBySession, lastTurnEndBySession } = useAgentStore()
   const showProgressMessages = useSettingsStore((s) => s.showProgressMessages)
   const showToolCallHistory = useSettingsStore((s) => s.showToolCallHistory ?? false)
   const lang = useSettingsStore((s) => s.language)
@@ -290,7 +434,6 @@ export function AgentPanel() {
   const activeStage = useProjectStore((s) => s.activeStage)
   const activeChatId = useChatStore((s) => s.activeChatId)
   const touchChat = useChatStore((s) => s.touchChat)
-  const openNewProject = useUiStore((s) => s.openNewProject)
   const isChat = appMode === 'normal'
   // The active surface is either a research project or a Quick Chat thread.
   const sessionId = isChat ? activeChatId : selectedTaskId
@@ -306,15 +449,13 @@ export function AgentPanel() {
     || selectedWorkflowRun.status === 'waiting_input'
   )
   const composerSessionId = moduleConversationBlocked ? null : sessionId
-  const experimentMode = appMode === 'project' && selectedWorkflowRun?.module_type === 'experiment'
-    ? (selectedWorkflowRun.module_data.experiment_execution_mode === 'manual' ? 'MANUAL' : 'AUTO')
-    : null
 
   const logs = conversationId ? (logsByProject[conversationId] ?? []) : []
   // Streaming is tracked per session so a different session's activity never
   // lights up this panel (e.g. a freshly created chat).
   const isStreaming = Boolean(conversationId && streamingBySession[conversationId])
   const isStopping = Boolean(sessionId && stoppingBySession[sessionId])
+  const lastTurnEnd = conversationId ? lastTurnEndBySession[conversationId] : undefined
   const skillPlugins = useSkillPluginsStore((s) => s.plugins)
   const loadSkillPlugins = useSkillPluginsStore((s) => s.load)
   const activeTurnIds = useRef<Record<string, string>>({})
@@ -441,6 +582,9 @@ export function AgentPanel() {
     const { mode: currentMode, agentProfile: currentAgentProfile } = useProjectStore.getState()
     const turnId = createClientId('turn')
     activeTurnIds.current[sessionId] = turnId
+    // Projects keep their knowledge bases server-side; a chat sends its own choice.
+    const chatKbIds = isChat ? useKnowledgeStore.getState().chatBases[sessionId] : undefined
+    const knowledge = chatKbIds?.length ? { selected_kb_ids: chatKbIds } : {}
     const workflowState = useWorkflowStore.getState()
     const workflowRunId = appMode === 'project'
       ? workflowState.selectedRunByProject[sessionId]
@@ -454,7 +598,7 @@ export function AgentPanel() {
           type: 'message', content: text, session_id: sessionId, user_id: 'ui_user',
           loop_mode: appMode, stream: useSettingsStore.getState().streamResponses,
           mode: currentMode, agent_profile: currentAgentProfile,
-          turn_id: turnId, selected_skill_ids: selectedSkills,
+          turn_id: turnId, selected_skill_ids: selectedSkills, ...knowledge,
           workflow_run_id: workflowRun.run_id, workflow_module_type: workflowRun.module_type,
         })
       })
@@ -469,6 +613,7 @@ export function AgentPanel() {
       stream: useSettingsStore.getState().streamResponses,
       turn_id: turnId,
       selected_skill_ids: selectedSkills,
+      ...knowledge,
       ...(appMode === 'project' && {
         mode: currentMode,
         agent_profile: currentAgentProfile,
@@ -559,42 +704,21 @@ export function AgentPanel() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--color-accent)]">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-        <span className="text-xs font-semibold tracking-wide text-[var(--color-text-muted)] uppercase">
-          {t('agentChat', lang)}
-        </span>
-        <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-muted)]'}`} />
-        <span className="text-[10px] text-[var(--color-text-muted)]">
-          {connected ? t('connected', lang) : t('disconnected', lang)}
-        </span>
-        {experimentMode && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-success)]/15 text-[var(--color-success)] font-medium">
-            {experimentMode}
+      {showHeader && (
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] shrink-0">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-[var(--color-accent)]">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+          </svg>
+          <span className="text-xs font-semibold tracking-wide text-[var(--color-text-muted)] uppercase">
+            {t('agentChat', lang)}
           </span>
-        )}
-        {sessionId && isChat && (
-          <button
-            onClick={() => openNewProject({ fromChatId: sessionId })}
-            title={t('promoteToProjectHint', lang)}
-            className="ml-auto flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium text-[var(--color-accent)] border border-[var(--color-accent)]/30 hover:bg-[var(--color-accent)]/10 transition-colors"
-          >
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="19" x2="12" y2="5" />
-              <polyline points="5 12 12 5 19 12" />
-            </svg>
-            {t('promoteToProject', lang)}
-          </button>
-        )}
-        {sessionId && appMode === 'project' && (
-          <span className="ml-auto text-[10px] font-mono text-[var(--color-text-muted)]">
-            {sessionId}
+          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-[var(--color-success)]' : 'bg-[var(--color-text-muted)]'}`} />
+          <span className="text-[10px] text-[var(--color-text-muted)]">
+            {connected ? t('connected', lang) : t('disconnected', lang)}
           </span>
-        )}
-      </div>
+          <AgentPanelActions />
+        </div>
+      )}
 
       {/* Message stream */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0">
@@ -717,6 +841,14 @@ export function AgentPanel() {
           return <LogEntry key={entry.id} entry={entry} />
         })}
 
+        {!isStreaming && lastTurnEnd && (
+          <TurnEndNotice
+            reason={lastTurnEnd.stopReason}
+            lang={lang}
+            onContinue={composerSessionId ? () => handleSend(t('turnContinueMessage', lang)) : undefined}
+          />
+        )}
+
         {showThinking && (
           <div className="px-4 py-2" role="status" aria-live="polite">
             <div className="inline-flex max-w-full min-w-0 items-center gap-2 overflow-hidden rounded-lg bg-[var(--color-bg-tertiary)] px-3 py-2 text-sm text-[var(--color-text-secondary)]">
@@ -749,6 +881,7 @@ export function AgentPanel() {
         isStreaming={isStreaming}
         isStopping={isStopping}
         availableSkills={availableSkills}
+        knowledgeScope={isChat ? 'chat' : 'project'}
         lang={lang}
         onSend={handleSend}
         onStop={handleStop}

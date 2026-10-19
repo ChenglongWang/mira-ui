@@ -1,22 +1,30 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react'
 import { TopBar } from './TopBar'
 import { StatusBar } from './StatusBar'
+import { TeamAdminBanner } from './TeamAdminBanner'
 import { PipelineProgress } from '@/components/pipeline/PipelineProgress'
 import { ProjectQueue } from '@/components/queue/ProjectQueue'
 import { ExperimentTimeline } from '@/components/experiment/ExperimentTimeline'
 import { TaskDetail } from '@/components/task/TaskDetail'
-import { AgentPanel } from '@/components/agent/AgentPanel'
+import { AgentWorkspacePanel } from '@/components/agent/AgentWorkspacePanel'
+import { ChatMainPlaceholder } from './ChatMainPlaceholder'
 import { SettingsModal } from '@/components/settings/SettingsModal'
 import { SkillsPluginsModal } from '@/components/settings/SkillsPluginsModal'
 import { ProvidersPage } from '@/components/providers/ProvidersPage'
-import { NewProjectModal } from '@/components/project/NewProjectModal'
+import { TeamUsagePage } from '@/components/team/TeamUsagePage'
+import { KnowledgePage } from '@/components/knowledge/KnowledgePage'
+import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { UpdateBanner } from '@/components/update/UpdateBanner'
 import { LocalEngineUpdateModal } from '@/components/engine/LocalEngineUpdateModal'
+import { SshPromptDialog } from '@/components/settings/SshPromptDialog'
+import { RemoteInstallDialog } from '@/components/settings/RemoteInstallDialog'
+import { TeamServerLoginDialog } from '@/components/settings/TeamServerLoginDialog'
 import { FeedbackDialog } from '@/components/feedback/FeedbackDialog'
 import { useUiStore } from '@/stores/uiStore'
 import { useProjectStore } from '@/stores/projectStore'
 import { useFeedbackStore } from '@/stores/feedbackStore'
 import { useWebSocket } from '@/hooks/useWebSocket'
+import { useTurnSync } from '@/hooks/useTurnSync'
 import { useUpdateCheck } from '@/hooks/useUpdateCheck'
 import { useWorkflowWebSocket } from '@/hooks/useWorkflowWebSocket'
 import { cn } from '@/lib/utils'
@@ -131,22 +139,29 @@ export function AppLayout() {
     setAgentPanelWidth,
     setSidebarCollapsed,
     setAgentPanelCollapsed,
+    chatCenterCollapsed,
+    toggleChatCenter,
+    setChatCenterCollapsed,
+    promotion,
+    closePromotion,
   } = useUiStore()
   const selectedTaskId = useProjectStore((s) => s.selectedTaskId)
   const activeStage = useProjectStore((s) => s.activeStage)
   const appMode = useProjectStore((s) => s.appMode)
   const lang = useSettingsStore((s) => s.language)
-  // In Quick Chat the conversation IS the primary content, so it takes the
-  // center column and the right agent panel (and project-only experiment
-  // timeline) are hidden. Project mode keeps the 3-column research layout.
+  // Quick Chat previews files in the center and keeps its conversation in the
+  // workbench. Collapsing the center gives the conversation the available space.
   const isChat = appMode === 'normal'
   const isProjectOverview = !isChat && activeStage === 'modules'
+  const centerCollapsed = isChat && chatCenterCollapsed
+  const workbenchWidth = !isChat && agentPanelCollapsed ? 0 : centerCollapsed ? undefined : agentPanelWidth
   // Suppress width transitions while actively dragging a splitter so the panel
   // tracks the cursor 1:1 instead of easing behind it.
   const [resizing, setResizing] = useState(false)
   const flushPendingFeedback = useFeedbackStore((s) => s.flushPending)
   useWebSocket()
   useWorkflowWebSocket()
+  useTurnSync()
   useUpdateCheck()
 
   useEffect(() => {
@@ -156,6 +171,7 @@ export function AppLayout() {
   return (
     <div className="h-screen flex flex-col">
       <TopBar />
+      <TeamAdminBanner />
       <UpdateBanner />
       <PipelineProgress />
 
@@ -195,37 +211,66 @@ export function AppLayout() {
           </div>
         )}
 
-        {/* Center: the chat (Quick Chat) or the project's Experiment Detail */}
-        <div className="flex-1 overflow-hidden min-w-0">
-          {isChat ? <AgentPanel /> : <TaskDetail />}
+        {/* Center: file preview/home in Quick Chat, or the project detail. */}
+        <div
+          hidden={centerCollapsed}
+          className={cn(
+            'overflow-hidden',
+            centerCollapsed ? 'w-0' : 'flex-1',
+            // Dragging the workbench wider must not squeeze the chat home away.
+            isChat && !centerCollapsed ? 'min-w-[280px]' : 'min-w-0',
+          )}
+        >
+          {isChat ? <ChatMainPlaceholder /> : <TaskDetail />}
         </div>
 
-        {/* Right agent panel — project mode only (in chat mode the chat is centered) */}
-        {!isChat && !isProjectOverview && (
+        {/* Quick Chat: click collapses the home pane, drag resizes the workbench. */}
+        {isChat && (
+          <SplitterToggle
+            onToggle={toggleChatCenter}
+            onStart={() => {
+              setChatCenterCollapsed(false)
+              setResizing(true)
+            }}
+            onEnd={() => setResizing(false)}
+            onMove={(clientX) => setAgentPanelWidth(window.innerWidth - clientX)}
+            className="border-l border-[var(--color-border)]"
+            ariaLabel={t('toggleChatCenter', lang)}
+          >
+            {chatCenterCollapsed ? <ChevronRight /> : <ChevronLeft />}
+          </SplitterToggle>
+        )}
+
+        {!isProjectOverview && (
           <>
-            <SplitterToggle
-              onToggle={toggleAgentPanel}
-              onStart={() => {
-                setAgentPanelCollapsed(false)
-                setResizing(true)
-              }}
-              onEnd={() => setResizing(false)}
-              onMove={(clientX) => setAgentPanelWidth(window.innerWidth - clientX)}
-              className="border-l border-[var(--color-border)]"
-              ariaLabel={t('toggleAgentPanel', lang)}
-            >
-              {agentPanelCollapsed ? <ChevronLeft /> : <ChevronRight />}
-            </SplitterToggle>
+            {!isChat && (
+              <SplitterToggle
+                onToggle={toggleAgentPanel}
+                onStart={() => {
+                  setAgentPanelCollapsed(false)
+                  setResizing(true)
+                }}
+                onEnd={() => setResizing(false)}
+                onMove={(clientX) => setAgentPanelWidth(window.innerWidth - clientX)}
+                className="border-l border-[var(--color-border)]"
+                ariaLabel={t('toggleAgentPanel', lang)}
+              >
+                {agentPanelCollapsed ? <ChevronLeft /> : <ChevronRight />}
+              </SplitterToggle>
+            )}
 
             <div
               className={cn(
-                'shrink-0 overflow-hidden',
+                'overflow-hidden',
+                // In Quick Chat the workbench gives way to the home pane's minimum on narrow windows.
+                isChat ? 'shrink min-w-0' : 'shrink-0',
+                centerCollapsed && 'flex-1',
                 !resizing && 'transition-[width] duration-200 ease-in-out',
               )}
-              style={{ width: agentPanelCollapsed ? 0 : agentPanelWidth }}
+              style={{ width: workbenchWidth }}
             >
-              <div className="h-full" style={{ width: agentPanelWidth }}>
-                <AgentPanel />
+              <div className="h-full" style={{ width: isChat ? '100%' : agentPanelWidth }}>
+                <AgentWorkspacePanel />
               </div>
             </div>
           </>
@@ -235,9 +280,14 @@ export function AppLayout() {
       <StatusBar />
       <SettingsModal />
       <LocalEngineUpdateModal />
+      <RemoteInstallDialog />
+      <SshPromptDialog />
+      <TeamServerLoginDialog />
       <SkillsPluginsModal />
       <ProvidersPage />
-      <NewProjectModal />
+      <TeamUsagePage />
+      <KnowledgePage />
+      {promotion && <CreateProjectDialog key={promotion.chatId} promotion={promotion} onClose={closePromotion} />}
       <FeedbackDialog />
     </div>
   )

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { JournalTargetSelect } from './JournalTargetSelect'
+import { journalSelection, type JournalProfile } from '@/services/journals'
 
 import { t } from '@/i18n'
 import {
@@ -17,6 +19,7 @@ import { buildWorkflowCandidates, resolveWorkflowCandidate } from '@/lib/workflo
 import { WorkflowCandidateList } from './WorkflowCandidateList'
 import { WorkflowInteractionPanel } from './WorkflowInteractionPanel'
 import { ExperimentExecutionMode } from './ExperimentExecutionMode'
+import { ExperimentContractMode } from './ExperimentContractMode'
 import { ExperimentInputPaths } from './ExperimentInputPaths'
 
 const MODULE_META: Record<WorkflowModuleType, {
@@ -41,11 +44,19 @@ const DOWNSTREAM_MODULES: Record<WorkflowModuleType, WorkflowModuleType[]> = {
 const DELIVERY_FORMATS: Array<{
   format: ExportFormat
   icon: string
-  labelKey: 'exportFormatReport' | 'exportFormatPaper' | 'exportFormatPresentation' | 'exportFormatMetadata'
+  labelKey:
+    | 'exportFormatReport'
+    | 'exportFormatPaper'
+    | 'exportFormatPresentation'
+    | 'exportFormatSlides'
+    | 'exportFormatNotebook'
+    | 'exportFormatMetadata'
 }> = [
   { format: 'experiment_report', icon: '📋', labelKey: 'exportFormatReport' },
   { format: 'paper_article', icon: '📄', labelKey: 'exportFormatPaper' },
   { format: 'presentation', icon: '📊', labelKey: 'exportFormatPresentation' },
+  { format: 'slides', icon: '🎞️', labelKey: 'exportFormatSlides' },
+  { format: 'notebook', icon: '📓', labelKey: 'exportFormatNotebook' },
   { format: 'metadata', icon: '📦', labelKey: 'exportFormatMetadata' },
 ]
 
@@ -54,9 +65,10 @@ function startPromptFor(
   moduleType: WorkflowModuleType,
   intent: string,
   deliveryFormat: ExportFormat | null,
+  targetJournal?: string,
 ): string {
   if (moduleType !== 'delivery' || !deliveryFormat) return intent
-  return `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true })}`
+  return `${intent}\n\n${buildExportMessage(task, deliveryFormat, { workflow: true, targetJournal })}`
 }
 
 export function ModuleStageControls() {
@@ -123,7 +135,9 @@ export function ModuleStageControls() {
   const [targetModule, setTargetModule] = useState<WorkflowModuleType | null>(null)
   const [intent, setIntent] = useState('')
   const [deliveryFormat, setDeliveryFormat] = useState<ExportFormat | null>(null)
+  const [targetJournal, setTargetJournal] = useState<JournalProfile | null>(null)
   const [experimentMode, setExperimentMode] = useState<'auto' | 'manual'>('auto')
+  const [experimentContractVersion, setExperimentContractVersion] = useState<1 | 2>(1)
   const [inputPaths, setInputPaths] = useState<string[]>([''])
   const [inputPathsValid, setInputPathsValid] = useState(true)
   const [pending, setPending] = useState(false)
@@ -149,6 +163,7 @@ export function ModuleStageControls() {
     const label = lang === 'zh' ? MODULE_META[moduleType].zh : MODULE_META[moduleType].en.toLowerCase()
     setTargetModule(moduleType)
     setExperimentMode('auto')
+    setExperimentContractVersion(1)
     setInputPaths([''])
     setInputPathsValid(true)
     setIntent(
@@ -193,6 +208,7 @@ export function ModuleStageControls() {
     }
     if (targetModule === 'experiment') {
       moduleData.experiment_execution_mode = experimentMode
+      moduleData.experiment_contract_version = experimentContractVersion
       const paths = [...new Set(inputPaths.map((p) => p.trim()).filter(Boolean))]
       if (paths.length) moduleData.external_read_paths = paths
     }
@@ -209,6 +225,7 @@ export function ModuleStageControls() {
       moduleData.delivery_format = deliveryFormat
       moduleData.output_path = config.outputPath
       moduleData.output_type = config.outputType
+      if (deliveryFormat === 'paper_article') Object.assign(moduleData, journalSelection(targetJournal))
     }
     setPending(true)
     setError(null)
@@ -221,7 +238,7 @@ export function ModuleStageControls() {
           : selectedRun.outputs,
         parentRunId: selectedCandidate?.runId ?? selectedRun.run_id,
       })
-      const prompt = startPromptFor(task, targetModule, normalizedIntent, deliveryFormat)
+      const prompt = startPromptFor(task, targetModule, normalizedIntent, deliveryFormat, targetJournal?.id)
       const conversationId = `${projectId}:run:${runId}`
       useAgentStore.getState().addLog(conversationId, {
         id: `module-start-${Date.now()}`,
@@ -418,7 +435,10 @@ export function ModuleStageControls() {
 
             {targetModule === 'experiment' && (
               <>
-                <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={pending} />
+                <div className="mt-4 grid grid-cols-2 gap-4">
+                  <ExperimentExecutionMode value={experimentMode} onChange={setExperimentMode} disabled={pending} />
+                  <ExperimentContractMode value={experimentContractVersion} onChange={setExperimentContractVersion} disabled={pending} />
+                </div>
                 <ExperimentInputPaths paths={inputPaths} onChange={setInputPaths} onValidChange={setInputPathsValid} disabled={pending} />
               </>
             )}
@@ -459,6 +479,7 @@ export function ModuleStageControls() {
                     )
                   })}
                 </div>
+                {deliveryFormat === 'paper_article' && <JournalTargetSelect value={targetJournal} onChange={setTargetJournal} disabled={pending} />}
               </fieldset>
             )}
 

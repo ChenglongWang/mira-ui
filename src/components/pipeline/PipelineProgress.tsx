@@ -5,7 +5,7 @@ import { useAgentStore } from '@/stores/agentStore'
 import { useSettingsStore } from '@/stores/settingsStore'
 import { useUiStore } from '@/stores/uiStore'
 import { cn } from '@/lib/utils'
-import type { AgentProfile, ContractVersion, PipelineStage } from '@/types'
+import type { AgentProfile, PipelineStage } from '@/types'
 import { t } from '@/i18n'
 import type { I18nKey } from '@/i18n'
 
@@ -32,10 +32,6 @@ const PROFILE_OPTIONS: Array<{ key: AgentProfile; labelKey: 'engineerMode' | 're
   { key: 'team', labelKey: 'teamMode' },
 ]
 
-const CONTRACT_MODES: { key: ContractVersion; labelKey: 'contractCompat' | 'contractStrict' }[] = [
-  { key: 1, labelKey: 'contractCompat' },
-  { key: 2, labelKey: 'contractStrict' },
-]
 
 function stageBadge(task: ReturnType<typeof useProjectStore.getState>['tasks'][0], stage: PipelineStage): string | null {
   if (stage === 'modules') return null
@@ -68,21 +64,18 @@ export function PipelineProgress() {
     selectedTaskId,
     activeStage,
     agentProfile,
-    contractVersion,
     setActiveStage,
     setAgentProfile,
-    setContractVersion,
   } = useProjectStore()
   const isStreaming = useAgentStore((s) => (selectedTaskId ? (s.streamingBySession[selectedTaskId] ?? false) : false))
   const lang = useSettingsStore((s) => s.language)
   const openSettings = useSettingsStore((s) => s.openSettings)
   const openSkillsPlugins = useUiStore((s) => s.openSkillsPlugins)
   const openProviders = useUiStore((s) => s.openProviders)
+  const openKnowledge = useUiStore((s) => s.openKnowledge)
   const task = tasks.find((t) => t.id === selectedTaskId)
   const hasRunningExperiment = !!task?.experiments.some((e) => e.status === 'running')
   const canSwitchAgentProfile = !isStreaming && !hasRunningExperiment
-  const canSwitchContractVersion = !isStreaming && !hasRunningExperiment
-  const effectiveContractVersion = task?.contractVersion ?? contractVersion
   const profileIndex = Math.max(0, PROFILE_OPTIONS.findIndex((p) => p.key === agentProfile))
   const agentProfileSlider = (
     <div className="shrink-0">
@@ -160,6 +153,17 @@ export function PipelineProgress() {
           <rect x="14" y="3" width="7" height="7" rx="1" />
           <rect x="3" y="14" width="7" height="7" rx="1" />
           <rect x="14" y="14" width="7" height="7" rx="1" />
+        </svg>
+      </button>
+      <button
+        onClick={openKnowledge}
+        className="p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)] transition-colors"
+        aria-label={t('knowledgeBases', lang)}
+        title={t('knowledgeBases', lang)}
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
         </svg>
       </button>
     </div>
@@ -249,35 +253,6 @@ export function PipelineProgress() {
         {toolButtons}
         <div className="h-4 w-px bg-[var(--color-border)] shrink-0" />
         {agentProfileSlider}
-        <div className="h-4 w-px bg-[var(--color-border)] shrink-0" />
-        <div
-          className={cn(
-            'flex items-center rounded-full border border-[var(--color-border)] bg-[var(--color-bg-tertiary)] p-0.5 shrink-0',
-            !canSwitchContractVersion && 'opacity-60',
-          )}
-          title={!canSwitchContractVersion ? t('contractSwitchManualOnly', lang) : undefined}
-        >
-          {CONTRACT_MODES.map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              disabled={!canSwitchContractVersion}
-              onClick={() => {
-                if (!canSwitchContractVersion) return
-                setContractVersion(item.key)
-              }}
-              className={cn(
-                'px-2 py-0.5 rounded-full text-[11px] font-medium transition-colors',
-                effectiveContractVersion === item.key
-                  ? 'bg-[var(--color-accent)]/15 text-[var(--color-accent)]'
-                  : 'text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]',
-                !canSwitchContractVersion && 'cursor-not-allowed',
-              )}
-            >
-              {t(item.labelKey, lang)}
-            </button>
-          ))}
-        </div>
 
         <div className="h-4 w-px bg-[var(--color-border)] shrink-0" />
 

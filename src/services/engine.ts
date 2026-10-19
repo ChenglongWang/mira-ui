@@ -2,6 +2,9 @@ import compatibility from '../../compatibility.json'
 import type { RuntimeConfigPayload } from './runtimeConfig'
 import { t } from '@/i18n'
 import { useSettingsStore } from '@/stores/settingsStore'
+import { usesDesktopEngineToken } from './engineAuth'
+import { activeTeamServerOrigin, teamServerEngineIssueMessage } from './teamServer'
+import { useTeamServerStore } from '@/stores/teamServerStore'
 
 export type EngineProbeStatus = 'compatible' | 'incompatible' | 'unreachable' | 'setup_required'
 
@@ -94,12 +97,29 @@ function explainRuntimeSetup(payload: Partial<RuntimeConfigPayload>): string | n
   return null
 }
 
+// Team server: why Mira Server could not reach the user's engine (the fetch
+// wrapper has already waited out engine_starting and tried a token refresh).
+function teamServerHealthMessage(status: number, origin: string): string | null {
+  const lang = currentLanguage()
+  if (status === 401) return t('teamServerSessionExpired', lang, { host: new URL(origin).host })
+  const issue = useTeamServerStore.getState().engineIssue
+  if ((status === 503 || status === 409) && issue) return teamServerEngineIssueMessage(issue.code, lang, origin, issue.message)
+  if (status === 503) return t('teamServerEngineStarting', lang, { host: new URL(origin).host })
+  return null
+}
+
 export async function probeEngineCompatibility(apiUrl: string): Promise<EngineProbeResult> {
   const base = normalizeGatewayBase(apiUrl)
   const lang = currentLanguage()
+  const teamOrigin = activeTeamServerOrigin()
+  const teamServer = teamOrigin !== null && base === teamOrigin
+  // Mira Server proxies only /api/*; the engine serves health and version there too.
+  const probeBase = teamServer ? `${base}/api` : base
   try {
-    const healthResp = await fetch(`${base}/health`)
+    const healthResp = await fetch(`${probeBase}/health`)
     if (!healthResp.ok) {
+      const teamMessage = teamServer ? teamServerHealthMessage(healthResp.status, teamOrigin) : null
+      if (teamMessage) return { status: 'unreachable', message: teamMessage, version: null, uptimeSeconds: null }
       return {
         status: 'unreachable',
         message: t('engineHealthCheckFailed', lang, { status: healthResp.status }),
@@ -108,7 +128,7 @@ export async function probeEngineCompatibility(apiUrl: string): Promise<EnginePr
       }
     }
 
-    const versionResp = await fetch(`${base}/version`)
+    const versionResp = await fetch(`${probeBase}/version`)
     if (!versionResp.ok) {
       return {
         status: 'unreachable',
@@ -157,6 +177,22 @@ export async function probeEngineCompatibility(apiUrl: string): Promise<EnginePr
     }
 
     const configResp = await fetch(`${base}/api/config`)
+    if (configResp.status === 401) {
+      // Reachable and compatible, but our gateway token is missing or stale.
+      return {
+        status: 'unreachable',
+        message: teamServer
+          ? t('teamServerSessionExpired', lang, { host: new URL(base).host })
+          : t(
+            useSettingsStore.getState().deploymentMode === 'remoteSsh'
+              ? 'engineTokenRejectedSsh'
+              : usesDesktopEngineToken(base) ? 'engineTokenRejectedDesktop' : 'engineTokenRejectedRemote',
+            lang,
+          ),
+        version,
+        uptimeSeconds,
+      }
+    }
     if (!configResp.ok) {
       return {
         status: 'incompatible',

@@ -17,7 +17,33 @@ export interface RuntimeProviderSettings {
   default_api_base: string | null
   is_oauth: boolean
   is_local: boolean
+  // OpenAI-compatible custom provider (``custom`` or ``custom_<id>``). Older
+  // engines omit it and support only the single ``custom`` entry.
+  is_custom?: boolean
+  // Billed by a subscription (Coding Plan, Token Plan, ChatGPT login, ...)
+  // rather than pay-as-you-go tokens. Older engines omit it.
+  is_subscription?: boolean
+  // Team server: the administrators manage this provider (its key stays on
+  // Mira Server); the user cannot change it.
+  managed_by?: 'team'
 }
+
+// Team server: what the team settings manage in this engine.
+export interface TeamManagedSummary {
+  revision: string
+  providers: string[]
+  model_params: boolean
+  defaults: string[]
+}
+
+// Updates for one provider. ``null`` deletes an additional custom provider.
+export type ProviderUpdate = {
+  api_key?: string
+  api_base?: string | null
+  models?: string[]
+  enabled?: boolean
+  name?: string | null
+} | null
 
 // ``team`` profile roles bindable to a provider + model on the providers page.
 export type TeamRole = 'supervisor' | 'student' | 'critic'
@@ -89,6 +115,10 @@ export interface RuntimeConfigPayload {
   providers: Record<string, RuntimeProviderSettings>
   // User-defined per-model parameter rules. Empty when none are configured.
   model_params?: ModelParamRule[]
+  // Team server: "team" when an administrator is editing the team settings.
+  scope?: 'team'
+  // Team server: present in a user's engine when team settings apply.
+  team?: TeamManagedSummary
 }
 
 function resolveApiUrl(apiUrl?: string): string {
@@ -157,7 +187,7 @@ export async function saveProvidersConfig(payload: {
     auto_max_rounds: number
     restrict_to_workspace: boolean
   } & RuntimeRoleBindings>
-  providers?: Partial<Record<string, { api_key?: string; api_base?: string | null; models?: string[]; enabled?: boolean }>>
+  providers?: Partial<Record<string, ProviderUpdate>>
   model_params?: ModelParamRule[]
 }, apiUrl?: string): Promise<RuntimeConfigPayload> {
   return postRuntimeConfig(payload, apiUrl)
