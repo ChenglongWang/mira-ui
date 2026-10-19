@@ -3,5 +3,5 @@
   "ui": "0.5.0rc2",
   "agent": "0.5.0rc1",
   "api_contract": "v1",
-  "min_agent_for_ui": "0.4.0rc1"
+  "min_agent_for_ui": "0.5.0rc1"
 }
