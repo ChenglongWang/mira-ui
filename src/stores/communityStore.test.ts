@@ -5,6 +5,9 @@ import type { CommunityApproval, CommunityStatus } from '@/services/community'
 
 vi.mock('@/services/community', () => ({
   fetchCommunityStatus: vi.fn(),
+  fetchCommunityInbox: vi.fn(async () => ({ items: [], unread: null })),
+  markCommunityInboxRead: vi.fn(),
+  setCommunityNotifications: vi.fn(),
   fetchCommunityApprovals: vi.fn(),
   setCommunityAutonomy: vi.fn(),
   decideCommunityApproval: vi.fn(),

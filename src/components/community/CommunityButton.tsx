@@ -6,16 +6,23 @@ import { useSettingsStore } from '@/stores/settingsStore'
 import { t } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+const REFRESH_MS = 60_000
+
 export function CommunityButton({ className }: { className?: string }) {
   const openCommunity = useUiStore((s) => s.openCommunity)
   const lang = useSettingsStore((s) => s.language)
   const pendingCount = useCommunityStore((s) => s.status?.pending_count ?? 0)
+  const unreadCount = useCommunityStore((s) => s.status?.unread?.total ?? 0)
   const refresh = useCommunityStore((s) => s.refresh)
+  const badge = pendingCount + unreadCount
 
-  // Light status fetch on mount so the pending badge appears before the panel
-  // is ever opened. Safe no-op when the engine isn't reachable.
+  // Status fetch on mount and then every minute, so new mail and approvals show
+  // up on the badge without opening the panel. Safe no-op when the engine
+  // isn't reachable.
   useEffect(() => {
     void refresh()
+    const timer = setInterval(() => void refresh(), REFRESH_MS)
+    return () => clearInterval(timer)
   }, [refresh])
 
   return (
@@ -46,12 +53,16 @@ export function CommunityButton({ className }: { className?: string }) {
         <circle cx="17" cy="11" r="3" />
         <path d="M22 21v-1a5 5 0 0 0-7-4.58" />
       </svg>
-      {pendingCount > 0 && (
+      {badge > 0 && (
         <span
           aria-hidden
-          className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full bg-amber-500 text-[10px] font-medium text-white flex items-center justify-center leading-none"
+          className={cn(
+            'absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full text-[10px] font-medium text-white flex items-center justify-center leading-none',
+            // Amber when something waits for a decision, otherwise the accent colour.
+            pendingCount > 0 ? 'bg-amber-500' : 'bg-[var(--color-accent)]',
+          )}
         >
-          {pendingCount > 9 ? '9+' : pendingCount}
+          {badge > 9 ? '9+' : badge}
         </span>
       )}
     </button>

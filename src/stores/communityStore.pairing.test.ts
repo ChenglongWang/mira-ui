@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/services/community', () => ({
   fetchCommunityStatus: vi.fn(),
+  fetchCommunityInbox: vi.fn(async () => ({ items: [], unread: null })),
+  markCommunityInboxRead: vi.fn(),
+  setCommunityNotifications: vi.fn(),
   fetchCommunityApprovals: vi.fn(async () => []),
   setCommunityAutonomy: vi.fn(),
   decideCommunityApproval: vi.fn(),
@@ -13,7 +16,14 @@ vi.mock('@/services/community', () => ({
 import { useCommunityStore } from './communityStore'
 import { useUiStore } from './uiStore'
 import type { CommunityStatus } from '@/services/community'
-import { fetchCommunityStatus, pollCommunityPairing, startCommunityPairing } from '@/services/community'
+import {
+  fetchCommunityInbox,
+  fetchCommunityStatus,
+  markCommunityInboxRead,
+  pollCommunityPairing,
+  setCommunityNotifications,
+  startCommunityPairing,
+} from '@/services/community'
 
 const status = (profile_onboarded?: boolean): CommunityStatus => ({
   enabled: true, logged_in: true, agent_id: 'a1', api_base: 'http://x', autonomy_mode: 'hitl',
@@ -64,5 +74,49 @@ describe('community pairing', () => {
     const { pairing } = useCommunityStore.getState()
     expect(pairing.active).toBe(false)
     expect(pairing.error).toMatch(/bio must be/)
+  })
+})
+
+describe('community inbox actions', () => {
+  beforeEach(() => {
+    useCommunityStore.setState({
+      status: {
+        enabled: true, logged_in: true, agent_id: 'a1', api_base: 'http://x', autonomy_mode: 'hitl', code_host: 'github',
+        domains: [], pending_count: 0, notifications: ['reply'], unread: { total: 2, by_kind: { reply: 2, mention: 0, review: 0, work: 0, activity: 0 } },
+      },
+      inbox: [
+        { id: 'a', kind: 'reply', type: 'reply', title: 'A', body: '', from: '', thread_id: '', url: '', created_at: '', read: false },
+        { id: 'b', kind: 'reply', type: 'reply', title: 'B', body: '', from: '', thread_id: '', url: '', created_at: '', read: false },
+      ],
+      error: null,
+    })
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  it('marks read at once and then takes the engine counts', async () => {
+    const counts = { total: 1, by_kind: { reply: 1, mention: 0, review: 0, work: 0, activity: 0 } }
+    vi.mocked(markCommunityInboxRead).mockResolvedValue({ ok: true, unread: counts })
+    const done = useCommunityStore.getState().markRead({ ids: ['a'] })
+    expect(useCommunityStore.getState().inbox.map((i) => i.read)).toEqual([true, false])
+    await done
+    expect(useCommunityStore.getState().status?.unread).toEqual(counts)
+  })
+
+  it('saves the notification choice', async () => {
+    vi.mocked(setCommunityNotifications).mockResolvedValue({ ok: true, notifications: [] })
+    await useCommunityStore.getState().setNotifications([])
+    expect(setCommunityNotifications).toHaveBeenCalledWith([])
+    expect(useCommunityStore.getState().status?.notifications).toEqual([])
+  })
+
+  it('refresh loads the inbox with the status', async () => {
+    vi.mocked(fetchCommunityStatus).mockResolvedValue(status(true))
+    vi.mocked(fetchCommunityInbox).mockResolvedValue({
+      items: [{ id: 'z', kind: 'mention', type: 'mention', title: 'Z', body: '', from: '', thread_id: '', url: '', created_at: '', read: false }],
+      unread: { total: 1, by_kind: { reply: 0, mention: 1, review: 0, work: 0, activity: 0 } },
+    })
+    await useCommunityStore.getState().refresh()
+    expect(useCommunityStore.getState().inbox.map((i) => i.id)).toEqual(['z'])
+    expect(useCommunityStore.getState().status?.unread?.total).toBe(1)
   })
 })
