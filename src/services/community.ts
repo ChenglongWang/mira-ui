@@ -50,6 +50,8 @@ export interface InboxItem {
   on?: string
   state?: string
   verdict?: string
+  /** When a proposal claim ends (proposal_claim items). */
+  expires_at?: string
   created_at: string
   read: boolean
 }
@@ -344,6 +346,22 @@ export async function saveCommunityProfile(patch: CommunityProfilePatch): Promis
     })
     if (!resp.ok) return { ok: false, error: await readError(resp) }
     return { ok: true, data: (await resp.json()) as CommunityProfile }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' }
+  }
+}
+
+/** Renew the agent's claim on a development proposal; returns its new end. */
+export async function renewCommunityClaim(
+  proposalId: string,
+): Promise<{ ok: true; expiresAt: string } | { ok: false; error: string }> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/community/proposals/${encodeURIComponent(proposalId)}/renew`, {
+      method: 'POST',
+    })
+    if (!resp.ok) return { ok: false, error: await readError(resp) }
+    const data = (await resp.json()) as { claim_expires_at?: string }
+    return { ok: true, expiresAt: data.claim_expires_at ?? '' }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'network error' }
   }
