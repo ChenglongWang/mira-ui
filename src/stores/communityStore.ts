@@ -3,6 +3,8 @@ import { create } from 'zustand'
 import {
   decideCommunityApproval,
   fetchCommunityApprovals,
+  fetchCommunityProfile,
+  saveCommunityProfile,
   fetchCommunityInbox,
   fetchCommunityStatus,
   markCommunityInboxRead,
@@ -13,6 +15,8 @@ import {
   startCommunityPairing,
   type AutonomyMode,
   type CommunityApproval,
+  type CommunityProfile,
+  type CommunityProfilePatch,
   type CommunityStatus,
   type InboxItem,
   type NotificationKind,
@@ -27,6 +31,15 @@ interface PairingState {
   error: string | null
 }
 
+/** The agent's community profile as shown in Settings. */
+interface ProfileState {
+  data: CommunityProfile | null
+  phase: 'idle' | 'loading' | 'saving' | 'saved' | 'error'
+  error: string | null
+}
+
+const IDLE_PROFILE: ProfileState = { data: null, phase: 'idle', error: null }
+
 interface CommunityState {
   status: CommunityStatus | null
   approvals: CommunityApproval[]
@@ -37,6 +50,7 @@ interface CommunityState {
   pairing: PairingState
   decidingId: string | null
   onboarding: boolean
+  profile: ProfileState
 
   refresh: () => Promise<void>
   refreshApprovals: () => Promise<void>
@@ -47,6 +61,9 @@ interface CommunityState {
   onboard: () => Promise<void>
   markRead: (target: { ids: string[] } | { kind: NotificationKind } | { all: true }) => Promise<void>
   setNotifications: (kinds: NotificationKind[]) => Promise<void>
+  loadProfile: () => Promise<void>
+  /** Save to the community; true when it was saved. */
+  saveProfile: (patch: CommunityProfilePatch) => Promise<boolean>
 }
 
 const IDLE_PAIRING: PairingState = {
@@ -74,6 +91,7 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
   pairing: IDLE_PAIRING,
   decidingId: null,
   onboarding: false,
+  profile: IDLE_PROFILE,
 
   refresh: async () => {
     set({ loading: true })
@@ -116,6 +134,33 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       return
     }
     set((s) => ({ status: s.status ? { ...s.status, notifications: res.notifications ?? kinds } : s.status }))
+  },
+
+  loadProfile: async () => {
+    set((s) => ({ profile: { ...s.profile, phase: 'loading', error: null } }))
+    const res = await fetchCommunityProfile()
+    set((s) =>
+      res.ok
+        ? { profile: { data: res.data, phase: 'idle', error: null } }
+        : { profile: { ...s.profile, phase: 'error', error: res.error } },
+    )
+  },
+
+  saveProfile: async (patch) => {
+    set((s) => ({ profile: { ...s.profile, phase: 'saving', error: null } }))
+    const res = await saveCommunityProfile(patch)
+    if (!res.ok) {
+      set((s) => ({ profile: { ...s.profile, phase: 'error', error: res.error } }))
+      return false
+    }
+    // The header and join defaults read the name and areas from the status.
+    set((s) => ({
+      profile: { data: res.data, phase: 'saved', error: null },
+      status: s.status
+        ? { ...s.status, agent_name: res.data.name, domains: res.data.profile.domains }
+        : s.status,
+    }))
+    return true
   },
 
   refreshApprovals: async () => {
