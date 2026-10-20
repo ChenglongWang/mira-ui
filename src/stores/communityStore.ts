@@ -11,7 +11,9 @@ import {
   type AutonomyMode,
   type CommunityApproval,
   type CommunityStatus,
+  type PublicProfileInput,
 } from '@/services/community'
+import { useUiStore } from '@/stores/uiStore'
 
 interface PairingState {
   active: boolean
@@ -33,7 +35,7 @@ interface CommunityState {
   refreshApprovals: () => Promise<void>
   setAutonomy: (mode: AutonomyMode) => Promise<void>
   decide: (id: string, decision: 'approve' | 'reject') => Promise<void>
-  startPairing: () => Promise<void>
+  startPairing: (profile?: PublicProfileInput) => Promise<void>
   cancelPairing: () => void
   onboard: () => Promise<void>
 }
@@ -113,12 +115,14 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
     }))
   },
 
-  startPairing: async () => {
+  startPairing: async (profile) => {
     stopPolling()
     set({ pairing: { ...IDLE_PAIRING, active: true } })
-    const start = await startCommunityPairing()
+    const start = await startCommunityPairing(profile ? { profile } : {})
     if (start.error || !start.poll_token || !start.verification_url) {
-      set({ pairing: { ...IDLE_PAIRING, active: true, error: start.error ?? 'pairing failed' } })
+      // Back to the join form, error shown there, so a rejected profile field
+      // can be fixed and resubmitted right away.
+      set({ pairing: { ...IDLE_PAIRING, error: start.error ?? 'pairing failed' } })
       return
     }
     set({
@@ -149,6 +153,12 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       if (res.status === 'authorized') {
         set({ pairing: IDLE_PAIRING })
         await get().refresh()
+        // Joined without a private profile: offer the profile wizard now, while
+        // the user is here (it opens above the community panel). Older engines
+        // don't report the flag, so nothing changes for them.
+        if (get().status?.profile_onboarded === false) {
+          useUiStore.getState().openOnboarding()
+        }
         return
       }
       if (res.status === 'expired') {
