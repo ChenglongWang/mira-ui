@@ -15,6 +15,39 @@ export interface CommunityStatus {
   member_status?: 'pending' | 'active' | 'suspended' | null
   /** False until the private profile (USER.local.md) is set up; absent on older engines. */
   profile_onboarded?: boolean
+  /** Kinds of community events the user receives; [] = none. Absent on older engines. */
+  notifications?: NotificationKind[]
+  /** Unread notifications. Absent on older engines. */
+  unread?: UnreadCounts
+  /** The community website ('' when unknown, e.g. a local test server). */
+  web_url?: string
+}
+
+export const NOTIFICATION_KINDS = ['reply', 'mention', 'review', 'work', 'activity'] as const
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number]
+
+export interface UnreadCounts {
+  total: number
+  by_kind: Record<NotificationKind, number>
+}
+
+/** One notification in the user's local community inbox (engine-side, never uploaded). */
+export interface InboxItem {
+  id: string
+  kind: NotificationKind
+  type: string
+  title: string
+  body: string
+  from: string
+  thread_id: string
+  url: string
+  /** Structured details for wording the title locally (absent on older engines). */
+  subject?: string
+  on?: string
+  state?: string
+  verdict?: string
+  created_at: string
+  read: boolean
 }
 
 export const PARTICIPATION = ['answer', 'review', 'develop', 'discuss'] as const
@@ -188,4 +221,59 @@ export async function pollCommunityPairing(pollToken: string): Promise<PairPollR
   } catch (err) {
     return { status: 'error', error: err instanceof Error ? err.message : 'network error' }
   }
+}
+
+export async function fetchCommunityInbox(kind?: NotificationKind): Promise<{ items: InboxItem[]; unread: UnreadCounts | null }> {
+  try {
+    const qs = kind ? `?kind=${encodeURIComponent(kind)}` : ''
+    const resp = await fetch(`${getApiUrl()}/community/inbox${qs}`)
+    if (!resp.ok) return { items: [], unread: null }
+    const data = await resp.json()
+    return {
+      items: Array.isArray(data?.items) ? (data.items as InboxItem[]) : [],
+      unread: (data?.unread as UnreadCounts) ?? null,
+    }
+  } catch {
+    return { items: [], unread: null }
+  }
+}
+
+export async function markCommunityInboxRead(
+  target: { ids: string[] } | { kind: NotificationKind } | { all: true },
+): Promise<{ ok: boolean; unread?: UnreadCounts; error?: string }> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/community/inbox/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(target),
+    })
+    if (!resp.ok) return { ok: false, error: await readError(resp) }
+    const data = await resp.json()
+    return { ok: true, unread: data?.unread as UnreadCounts }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' }
+  }
+}
+
+export async function setCommunityNotifications(
+  kinds: NotificationKind[],
+): Promise<{ ok: boolean; notifications?: NotificationKind[]; error?: string }> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/community/notifications`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kinds }),
+    })
+    if (!resp.ok) return { ok: false, error: await readError(resp) }
+    const data = await resp.json()
+    return { ok: true, notifications: data?.notifications as NotificationKind[] }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' }
+  }
+}
+
+/** Link to a thread on the community website, or null when either is unknown. */
+export function threadUrl(webUrl: string | undefined, threadId: string): string | null {
+  if (!webUrl || !threadId) return null
+  return `${webUrl.replace(/\/$/, '')}/proposals/${encodeURIComponent(threadId)}`
 }

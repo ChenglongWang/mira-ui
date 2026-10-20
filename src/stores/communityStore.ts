@@ -3,7 +3,10 @@ import { create } from 'zustand'
 import {
   decideCommunityApproval,
   fetchCommunityApprovals,
+  fetchCommunityInbox,
   fetchCommunityStatus,
+  markCommunityInboxRead,
+  setCommunityNotifications,
   onboardCommunity,
   pollCommunityPairing,
   setCommunityAutonomy,
@@ -11,6 +14,8 @@ import {
   type AutonomyMode,
   type CommunityApproval,
   type CommunityStatus,
+  type InboxItem,
+  type NotificationKind,
   type PublicProfileInput,
 } from '@/services/community'
 import { useUiStore } from '@/stores/uiStore'
@@ -25,6 +30,8 @@ interface PairingState {
 interface CommunityState {
   status: CommunityStatus | null
   approvals: CommunityApproval[]
+  /** The user's notifications, newest first. */
+  inbox: InboxItem[]
   loading: boolean
   error: string | null
   pairing: PairingState
@@ -38,6 +45,8 @@ interface CommunityState {
   startPairing: (profile?: PublicProfileInput) => Promise<void>
   cancelPairing: () => void
   onboard: () => Promise<void>
+  markRead: (target: { ids: string[] } | { kind: NotificationKind } | { all: true }) => Promise<void>
+  setNotifications: (kinds: NotificationKind[]) => Promise<void>
 }
 
 const IDLE_PAIRING: PairingState = {
@@ -59,6 +68,7 @@ function stopPolling() {
 export const useCommunityStore = create<CommunityState>((set, get) => ({
   status: null,
   approvals: [],
+  inbox: [],
   loading: false,
   error: null,
   pairing: IDLE_PAIRING,
@@ -72,10 +82,40 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
       set({ loading: false, error: 'communityLoadError' })
       return
     }
-    const approvals = status.logged_in
-      ? await fetchCommunityApprovals('pending')
-      : []
-    set({ status, approvals, loading: false, error: null })
+    const [approvals, inbox] = status.logged_in
+      ? await Promise.all([fetchCommunityApprovals('pending'), fetchCommunityInbox()])
+      : [[], { items: [], unread: null }]
+    set({
+      status: inbox.unread ? { ...status, unread: inbox.unread } : status,
+      approvals,
+      inbox: inbox.items,
+      loading: false,
+      error: null,
+    })
+  },
+
+  markRead: async (target) => {
+    const hit = (item: InboxItem) =>
+      'all' in target || ('kind' in target ? item.kind === target.kind : target.ids.includes(item.id))
+    // Show it read right away; the engine's counts follow.
+    set((s) => ({ inbox: s.inbox.map((item) => (hit(item) ? { ...item, read: true } : item)) }))
+    const res = await markCommunityInboxRead(target)
+    if (!res.ok) {
+      set({ error: res.error ?? 'error' })
+      return
+    }
+    if (res.unread) {
+      set((s) => ({ status: s.status ? { ...s.status, unread: res.unread } : s.status }))
+    }
+  },
+
+  setNotifications: async (kinds) => {
+    const res = await setCommunityNotifications(kinds)
+    if (!res.ok) {
+      set({ error: res.error ?? 'error' })
+      return
+    }
+    set((s) => ({ status: s.status ? { ...s.status, notifications: res.notifications ?? kinds } : s.status }))
   },
 
   refreshApprovals: async () => {
