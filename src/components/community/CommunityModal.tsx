@@ -3,13 +3,16 @@ import { useEffect, useState } from 'react'
 import { useCommunityStore } from '@/stores/communityStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { PARTICIPATION, splitList } from '@/services/community'
-import type { Participation, PublicProfileInput } from '@/services/community'
+import { agentLabel } from '@/services/community'
+import type { PublicProfileInput } from '@/services/community'
 import { t } from '@/i18n'
 import type { I18nKey } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { CommunityMailbox } from './CommunityMailbox'
+import { ProfileFields, buildPublicProfile, emptyProfileForm, profileFormProblem } from './ProfileForm'
+
+export { buildPublicProfile }
 
 type Lang = ReturnType<typeof useSettingsStore.getState>['language']
 
@@ -61,9 +64,17 @@ export function CommunityModal() {
             {loggedIn && <MemberBadge status={status?.member_status} lang={lang} />}
           </div>
           <div className="flex items-center gap-3">
-            {status?.agent_id && (
-              <span className="hidden text-[11px] text-[var(--color-text-muted)] md:inline">
-                {t('communityAgentLabel', lang)}: <span className="font-mono">{status.agent_id.slice(0, 8)}</span>
+            {loggedIn && status?.agent_id && (
+              <span className="hidden text-[11px] text-[var(--color-text-muted)] md:inline" data-testid="community-agent-label">
+                {t('communityAgentLabel', lang)}:{' '}
+                {status.agent_name ? (
+                  <>
+                    <span className="text-[var(--color-text-secondary)]">{status.agent_name}</span>{' '}
+                    <span className="font-mono">#{status.agent_id.slice(0, 8)}</span>
+                  </>
+                ) : (
+                  <span className="font-mono">{agentLabel(null, status.agent_id)}</span>
+                )}
               </span>
             )}
             {status?.web_url && (
@@ -95,9 +106,12 @@ export function CommunityModal() {
 
           {!loggedIn ? (
             <JoinSection
+              // Remount once the status arrives, so the defaults come from it.
+              key={status ? 'ready' : 'loading'}
               lang={lang}
               loading={loading}
               pairing={pairing}
+              initialName={status?.suggested_name ?? status?.agent_name ?? ''}
               initialDomains={status?.domains ?? []}
               onJoin={(profile) => void startPairing(profile)}
               onCancel={cancelPairing}
@@ -175,41 +189,11 @@ function MemberBadge({
   )
 }
 
-const PARTICIPATION_LABELS: Record<Participation, I18nKey> = {
-  answer: 'communityParticipationAnswer',
-  review: 'communityParticipationReview',
-  develop: 'communityParticipationDevelop',
-  discuss: 'communityParticipationDiscuss',
-}
-
-const BIO_MAX = 500
-
-/** The public profile, from the join form's raw values. Empty fields are left out. */
-export function buildPublicProfile(form: {
-  domains: string
-  techStack: string
-  languages: string
-  participation: Participation[]
-  bio: string
-}): PublicProfileInput {
-  const profile: PublicProfileInput = { participation: form.participation }
-  const domains = splitList(form.domains)
-  const techStack = splitList(form.techStack)
-  const languages = splitList(form.languages)
-  if (domains.length) profile.domains = domains
-  if (techStack.length) profile.tech_stack = techStack
-  if (languages.length) profile.languages = languages
-  if (form.bio.trim()) profile.bio = form.bio.trim()
-  return profile
-}
-
-const fieldClass =
-  'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2.5 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none'
-
 function JoinSection({
   lang,
   loading,
   pairing,
+  initialName,
   initialDomains,
   onJoin,
   onCancel,
@@ -217,18 +201,14 @@ function JoinSection({
   lang: Lang
   loading: boolean
   pairing: ReturnType<typeof useCommunityStore.getState>['pairing']
+  initialName: string
   initialDomains: string[]
   onJoin: (profile: PublicProfileInput) => void
   onCancel: () => void
 }) {
-  const [domains, setDomains] = useState(initialDomains.join(', '))
-  const [techStack, setTechStack] = useState('')
-  const [languages, setLanguages] = useState('')
-  const [participation, setParticipation] = useState<Participation[]>([...PARTICIPATION])
-  const [bio, setBio] = useState('')
-  const toggle = (p: Participation) =>
-    setParticipation((cur) => (cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]))
-  const canJoin = !loading && participation.length > 0 && bio.length <= BIO_MAX
+  const [form, setForm] = useState(() => emptyProfileForm(initialName, initialDomains))
+  const problem = profileFormProblem(form)
+  const canJoin = !loading && !problem
 
   return (
     <section className="space-y-4 py-4">
@@ -243,7 +223,7 @@ function JoinSection({
           className="space-y-3 rounded-lg border border-[var(--color-border)] px-4 py-3 text-left"
           onSubmit={(e) => {
             e.preventDefault()
-            if (canJoin) onJoin(buildPublicProfile({ domains, techStack, languages, participation, bio }))
+            if (canJoin) onJoin(buildPublicProfile(form))
           }}
         >
           <div className="space-y-0.5">
@@ -252,41 +232,7 @@ function JoinSection({
             </h3>
             <p className="text-[11px] text-[var(--color-text-muted)]">{t('communityProfileHint', lang)}</p>
           </div>
-          {([
-            ['communityProfileDomains', domains, setDomains, 'plugins, agents'],
-            ['communityProfileTech', techStack, setTechStack, 'python, react'],
-            ['communityProfileLanguages', languages, setLanguages, 'en, zh'],
-          ] as [I18nKey, string, (v: string) => void, string][]).map(([label, value, setValue, placeholder]) => (
-            <label key={label} className="block space-y-1">
-              <span className="text-xs text-[var(--color-text-secondary)]">
-                {t(label, lang)} <span className="text-[var(--color-text-muted)]">· {t('communityProfileListHint', lang)}</span>
-              </span>
-              <input value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={fieldClass} />
-            </label>
-          ))}
-          <fieldset className="space-y-1">
-            <legend className="text-xs text-[var(--color-text-secondary)]">{t('communityProfileParticipation', lang)}</legend>
-            <div className="flex flex-wrap gap-x-4 gap-y-1">
-              {PARTICIPATION.map((p) => (
-                <label key={p} className="flex items-center gap-1.5 text-sm text-[var(--color-text-primary)]">
-                  <input type="checkbox" checked={participation.includes(p)} onChange={() => toggle(p)} />
-                  {t(PARTICIPATION_LABELS[p], lang)}
-                </label>
-              ))}
-            </div>
-            {participation.length === 0 && (
-              <p className="text-[11px] text-amber-300">{t('communityProfileParticipationRequired', lang)}</p>
-            )}
-          </fieldset>
-          <div className="space-y-1">
-            <label className="block space-y-1">
-              <span className="text-xs text-[var(--color-text-secondary)]">{t('communityProfileBio', lang)}</span>
-              <textarea value={bio} rows={2} onChange={(e) => setBio(e.target.value)} className={cn(fieldClass, 'resize-none')} />
-            </label>
-            <span className={cn('block text-right text-[10px]', bio.length > BIO_MAX ? 'text-red-300' : 'text-[var(--color-text-muted)]')}>
-              {bio.length}/{BIO_MAX}
-            </span>
-          </div>
+          <ProfileFields values={form} onChange={setForm} lang={lang} />
           {pairing.error && <p className="text-xs text-red-300">{pairing.error}</p>}
           <div className="text-center">
             <button

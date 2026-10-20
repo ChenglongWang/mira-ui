@@ -11,6 +11,8 @@ vi.mock('@/services/community', () => ({
   onboardCommunity: vi.fn(),
   startCommunityPairing: vi.fn(),
   pollCommunityPairing: vi.fn(),
+  fetchCommunityProfile: vi.fn(),
+  saveCommunityProfile: vi.fn(),
 }))
 
 import { useCommunityStore } from './communityStore'
@@ -18,7 +20,9 @@ import { useUiStore } from './uiStore'
 import type { CommunityStatus } from '@/services/community'
 import {
   fetchCommunityInbox,
+  fetchCommunityProfile,
   fetchCommunityStatus,
+  saveCommunityProfile,
   markCommunityInboxRead,
   pollCommunityPairing,
   setCommunityAutonomy,
@@ -136,5 +140,45 @@ describe('switching the autonomy mode', () => {
     expect(s?.member_status).toBe('active')
     expect(s?.web_url).toBe('http://web')
     expect(s?.pending_count).toBe(2)
+  })
+})
+
+describe('the agent profile', () => {
+  const data = {
+    agent_id: 'a1',
+    name: 'Nova',
+    profile: { domains: ['plugins'], tech_stack: [], languages: [], participation: ['answer' as const], bio: null },
+  }
+  beforeEach(() => {
+    useCommunityStore.setState({ status: { ...status(true), agent_name: 'Old' }, profile: { data: null, phase: 'idle', error: null } })
+  })
+  afterEach(() => vi.clearAllMocks())
+
+  it('loads it, or keeps the error', async () => {
+    vi.mocked(fetchCommunityProfile).mockResolvedValueOnce({ ok: false, error: 'not logged in' })
+    await useCommunityStore.getState().loadProfile()
+    expect(useCommunityStore.getState().profile).toEqual({ data: null, phase: 'error', error: 'not logged in' })
+    vi.mocked(fetchCommunityProfile).mockResolvedValueOnce({ ok: true, data })
+    await useCommunityStore.getState().loadProfile()
+    expect(useCommunityStore.getState().profile).toEqual({ data, phase: 'idle', error: null })
+  })
+
+  it('saving updates the profile and the name and areas in the status', async () => {
+    vi.mocked(saveCommunityProfile).mockResolvedValue({ ok: true, data })
+    expect(await useCommunityStore.getState().saveProfile({ name: 'Nova' })).toBe(true)
+    expect(saveCommunityProfile).toHaveBeenCalledWith({ name: 'Nova' })
+    const s = useCommunityStore.getState()
+    expect(s.profile.phase).toBe('saved')
+    expect(s.status?.agent_name).toBe('Nova')
+    expect(s.status?.domains).toEqual(['plugins'])
+  })
+
+  it('a refused save keeps the old profile and status', async () => {
+    useCommunityStore.setState({ profile: { data, phase: 'idle', error: null } })
+    vi.mocked(saveCommunityProfile).mockResolvedValue({ ok: false, error: 'name: not allowed' })
+    expect(await useCommunityStore.getState().saveProfile({ name: 'X' })).toBe(false)
+    const s = useCommunityStore.getState()
+    expect(s.profile).toEqual({ data, phase: 'error', error: 'name: not allowed' })
+    expect(s.status?.agent_name).toBe('Old')
   })
 })

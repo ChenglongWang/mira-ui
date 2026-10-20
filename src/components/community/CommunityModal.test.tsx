@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CommunityModal } from './CommunityModal'
 import { useCommunityStore } from '@/stores/communityStore'
@@ -142,7 +142,7 @@ describe('CommunityModal join form', () => {
     useCommunityStore.setState({
       status: {
         enabled: true, logged_in: false, agent_id: '', api_base: 'http://x', autonomy_mode: 'hitl',
-        code_host: 'github', domains: ['rag'], pending_count: 0,
+        code_host: 'github', domains: ['rag'], pending_count: 0, suggested_name: 'MIRAI',
       },
       approvals: [],
       loading: false,
@@ -153,19 +153,37 @@ describe('CommunityModal join form', () => {
     })
   })
 
-  it('collects the public profile and passes it to pairing', () => {
+  it('collects the name and public profile and passes them to pairing', () => {
     render(<CommunityModal />)
+    expect((screen.getByRole('textbox', { name: 'Agent name' }) as HTMLInputElement).value).toBe('MIRAI')
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent name' }), { target: { value: ' Nova ' } })
     expect((screen.getByPlaceholderText('plugins, agents') as HTMLInputElement).value).toBe('rag')
     fireEvent.change(screen.getByPlaceholderText('python, react'), { target: { value: 'Python， go, python' } })
     fireEvent.click(screen.getByLabelText('Develop'))
     fireEvent.change(screen.getByRole('textbox', { name: 'One line about you' }), { target: { value: ' Builds RAG tools ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Join the community' }))
     expect(startPairing).toHaveBeenCalledWith({
+      name: 'Nova',
       domains: ['rag'],
       tech_stack: ['Python', 'go', 'python'],
       participation: ['answer', 'review', 'discuss'],
       bio: 'Builds RAG tools',
     })
+  })
+
+  it('needs a valid name and says what a valid one is', () => {
+    render(<CommunityModal />)
+    const join = screen.getByRole('button', { name: 'Join the community' }) as HTMLButtonElement
+    const name = screen.getByRole('textbox', { name: 'Agent name' })
+    fireEvent.change(name, { target: { value: 'my agent' } })
+    expect(screen.getByText(/No spaces or @/)).toBeTruthy()
+    expect(join.disabled).toBe(true)
+    fireEvent.change(name, { target: { value: '' } })
+    expect(join.disabled).toBe(true)
+    fireEvent.change(name, { target: { value: '小米-2' } })
+    expect(join.disabled).toBe(false)
+    fireEvent.click(join)
+    expect(startPairing).toHaveBeenCalledWith(expect.objectContaining({ name: '小米-2' }))
   })
 
   it('needs at least one way to take part', () => {
@@ -182,5 +200,83 @@ describe('CommunityModal join form', () => {
     render(<CommunityModal />)
     expect(screen.getByText('pairing failed: bad bio')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Join the community' })).toBeTruthy()
+  })
+})
+
+describe('CommunityModal agent profile', () => {
+  const profile = {
+    agent_id: '35f0bd8e-e032-46b1-bb0c-c134bdc21fb1',
+    name: 'Nova',
+    profile: { domains: ['plugins'], tech_stack: ['python'], languages: ['en'], participation: ['answer', 'review'], bio: 'Builds plugins' },
+  }
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        const patch = JSON.parse(String(init.body))
+        if (patch.name === 'Refused') return new Response(JSON.stringify({ error: 'name: not allowed' }), { status: 400 })
+        const { name, ...rest } = patch
+        return new Response(JSON.stringify({ ...profile, name, profile: { ...profile.profile, ...rest } }), { status: 200 })
+      }
+      return new Response(JSON.stringify(profile), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    useSettingsStore.setState({ language: 'en' })
+    useUiStore.setState({ communityOpen: true })
+    useCommunityStore.setState({
+      status: {
+        enabled: true, logged_in: true, agent_id: profile.agent_id, api_base: 'http://x', autonomy_mode: 'hybrid',
+        code_host: 'github', domains: ['plugins'], pending_count: 0, member_status: 'active', agent_name: 'Nova',
+      },
+      approvals: [],
+      inbox: [],
+      loading: false,
+      error: null,
+      profile: { data: null, phase: 'idle', error: null },
+      refresh: vi.fn(async () => {}),
+    })
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('shows the agent as "Name #id" in the header', () => {
+    render(<CommunityModal />)
+    expect(screen.getByTestId('community-agent-label').textContent).toBe('Agent: Nova #35f0bd8e')
+  })
+
+  it('loads the profile in Settings and saves an edit to the community', async () => {
+    render(<CommunityModal />)
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Builds plugins')).toBeTruthy()
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/community\/profile$/)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Agent name' }), { target: { value: 'Nova2' } })
+    fireEvent.change(screen.getByPlaceholderText('python, react'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    expect(await screen.findByText('Saved')).toBeTruthy()
+    const [url, init] = fetchMock.mock.calls.at(-1)!
+    expect(String(url)).toMatch(/\/community\/profile$/)
+    expect(init.method).toBe('PUT')
+    expect(JSON.parse(init.body)).toEqual({
+      name: 'Nova2', domains: ['plugins'], tech_stack: [], languages: ['en'], participation: ['answer', 'review'], bio: 'Builds plugins',
+    })
+    expect(screen.getByTestId('community-agent-label').textContent).toBe('Agent: Nova2 #35f0bd8e')
+  })
+
+  it('keeps the form open and shows why a save was refused', async () => {
+    render(<CommunityModal />)
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const name = screen.getByRole('textbox', { name: 'Agent name' })
+    fireEvent.change(name, { target: { value: 'two words' } })
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(name, { target: { value: 'Refused' } }) // valid here, refused by the community
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('name: not allowed')).toBeTruthy()
+    expect((screen.getByRole('textbox', { name: 'Agent name' }) as HTMLInputElement).value).toBe('Refused')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByText('Builds plugins')).toBeTruthy()
   })
 })

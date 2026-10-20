@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { useCommunityStore } from '@/stores/communityStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -10,6 +10,14 @@ import { cn } from '@/lib/utils'
 
 import { actionLabel, approvalSummary, personaDiff } from './approvalDisplay'
 import { itemSender, itemTitle } from './inboxDisplay'
+import {
+  PARTICIPATION_LABELS,
+  ProfileFields,
+  buildProfilePatch,
+  profileFormFrom,
+  profileFormProblem,
+  type ProfileFormValues,
+} from './ProfileForm'
 
 type Lang = ReturnType<typeof useSettingsStore.getState>['language']
 
@@ -379,6 +387,8 @@ function SettingsPane({
     onNotifications(NOTIFICATION_KINDS.filter((k) => (k === kind ? !enabled.includes(k) : enabled.includes(k))))
   return (
     <div className="min-w-0 flex-1 space-y-6 overflow-y-auto p-5">
+      <AgentProfileSection lang={lang} />
+
       <section className="space-y-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
           {t('communityNotifications', lang)}
@@ -441,5 +451,108 @@ function SettingsPane({
         <p className="text-[11px] text-[var(--color-text-muted)]">{t('communityRestartHint', lang)}</p>
       </section>
     </div>
+  )
+}
+
+/** The agent's name and public profile, read from and saved to the community. */
+function AgentProfileSection({ lang }: { lang: Lang }) {
+  const { profile, loadProfile, saveProfile } = useCommunityStore()
+  const [form, setForm] = useState<ProfileFormValues | null>(null)
+
+  useEffect(() => {
+    void loadProfile()
+  }, [loadProfile])
+
+  const data = profile.data
+  const saving = profile.phase === 'saving'
+  const problem = form ? profileFormProblem(form) : null
+
+  const save = async () => {
+    if (!form || problem) return
+    if (await saveProfile(buildProfilePatch(form))) setForm(null)
+  }
+
+  return (
+    <section aria-label={t('communityAgentProfile', lang)} className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-muted)]">
+          {t('communityAgentProfile', lang)}
+        </h3>
+        {data && !form && (
+          <button
+            type="button"
+            onClick={() => setForm(profileFormFrom(data))}
+            className="rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"
+          >
+            {t('communityEdit', lang)}
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-[var(--color-text-muted)]">{t('communityAgentProfileHint', lang)}</p>
+
+      {!data && profile.phase === 'loading' && (
+        <p className="text-xs text-[var(--color-text-muted)]">{t('communityProfileLoading', lang)}</p>
+      )}
+      {!data && profile.phase === 'error' && (
+        <p className="text-xs text-red-300">{t('communityProfileLoadFailed', lang, { error: profile.error ?? '' })}</p>
+      )}
+
+      {data && !form && (
+        <dl className="space-y-1.5 rounded-lg border border-[var(--color-border)] px-3 py-2.5 text-sm">
+          <div className="flex items-baseline gap-2">
+            <dt className="sr-only">{t('communityAgentName', lang)}</dt>
+            <dd className="font-medium text-[var(--color-text-primary)]">
+              {data.name} <span className="font-mono text-xs font-normal text-[var(--color-text-muted)]">#{data.agent_id.slice(0, 8)}</span>
+            </dd>
+            {profile.phase === 'saved' && <span className="text-[11px] text-emerald-300">{t('communitySaved', lang)}</span>}
+          </div>
+          {data.profile.bio && <dd className="text-[var(--color-text-secondary)]">{data.profile.bio}</dd>}
+          {([
+            ['communityProfileDomains', data.profile.domains.join(', ')],
+            ['communityProfileTech', data.profile.tech_stack.join(', ')],
+            ['communityProfileLanguages', data.profile.languages.join(', ')],
+            ['communityProfileParticipation', data.profile.participation.map((p) => t(PARTICIPATION_LABELS[p], lang)).join(', ')],
+          ] as [I18nKey, string][]).map(([label, value]) => (
+            <div key={label} className="flex gap-2 text-xs">
+              <dt className="w-32 shrink-0 text-[var(--color-text-muted)]">{t(label, lang)}</dt>
+              <dd className={value ? 'text-[var(--color-text-primary)]' : 'text-[var(--color-text-muted)]'}>
+                {value || t('communityProfileEmpty', lang)}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {form && (
+        <form
+          aria-label={t('communityAgentProfile', lang)}
+          className="space-y-3 rounded-lg border border-[var(--color-border)] px-3 py-3"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void save()
+          }}
+        >
+          <ProfileFields values={form} onChange={setForm} lang={lang} />
+          {profile.phase === 'error' && profile.error && <p className="text-xs text-red-300">{profile.error}</p>}
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={saving || !!problem}
+              className="rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {saving ? t('communitySaving', lang) : t('communitySave', lang)}
+            </button>
+            <button
+              type="button"
+              disabled={saving}
+              onClick={() => setForm(null)}
+              className="rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] disabled:opacity-50"
+            >
+              {t('communityCancel', lang)}
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
   )
 }

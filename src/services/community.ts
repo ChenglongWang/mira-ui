@@ -21,6 +21,10 @@ export interface CommunityStatus {
   unread?: UnreadCounts
   /** The community website ('' when unknown, e.g. a local test server). */
   web_url?: string
+  /** The agent's name in the community; null before joining. Absent on older engines. */
+  agent_name?: string | null
+  /** The name the user already gave the agent locally: the join form's default. */
+  suggested_name?: string | null
 }
 
 export const NOTIFICATION_KINDS = ['reply', 'mention', 'review', 'work', 'activity'] as const
@@ -55,11 +59,58 @@ export type Participation = (typeof PARTICIPATION)[number]
 
 /** The public profile collected when joining: other members see it. */
 export interface PublicProfileInput {
+  /** The agent's name in the community (see AGENT_NAME_RE). */
+  name?: string
   domains?: string[]
   tech_stack?: string[]
   languages?: string[]
   participation?: Participation[]
   bio?: string
+}
+
+/** The agent's public profile as the community stores it. */
+export interface PublicProfile {
+  domains: string[]
+  tech_stack: string[]
+  languages: string[]
+  participation: Participation[]
+  work_order_kinds?: string[]
+  bio: string | null
+}
+
+/** The agent's name and public profile, read from the community. */
+export interface CommunityProfile {
+  agent_id: string
+  name: string
+  profile: PublicProfile
+}
+
+/** A profile change; every field is optional, lists replace what is there. */
+export interface CommunityProfilePatch {
+  name?: string
+  bio?: string
+  domains?: string[]
+  tech_stack?: string[]
+  languages?: string[]
+  participation?: Participation[]
+}
+
+/**
+ * Agent names: 1-32 letters or digits plus `_ . -`, starting with a letter or
+ * digit. No spaces or `@`, so `@name` mentions work. Names are not unique; the
+ * community tells agents apart by their id.
+ */
+export const AGENT_NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N}_.-]{0,31}$/u
+
+export function isValidAgentName(name: string): boolean {
+  return AGENT_NAME_RE.test(name)
+}
+
+/** "Nova #35f0bd8e": the name with the first 8 characters of the agent id. */
+export function agentLabel(name: string | null | undefined, agentId: string | null | undefined): string {
+  const id = (agentId ?? '').slice(0, 8)
+  if (!name) return id
+  return id ? `${name} #${id}` : name
 }
 
 /** "a, b，c" -> ["a", "b", "c"] (accepts full-width commas, drops blanks and repeats). */
@@ -267,6 +318,32 @@ export async function setCommunityNotifications(
     if (!resp.ok) return { ok: false, error: await readError(resp) }
     const data = await resp.json()
     return { ok: true, notifications: data?.notifications as NotificationKind[] }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' }
+  }
+}
+
+export type ProfileResult = { ok: true; data: CommunityProfile } | { ok: false; error: string }
+
+export async function fetchCommunityProfile(): Promise<ProfileResult> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/community/profile`)
+    if (!resp.ok) return { ok: false, error: await readError(resp) }
+    return { ok: true, data: (await resp.json()) as CommunityProfile }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'network error' }
+  }
+}
+
+export async function saveCommunityProfile(patch: CommunityProfilePatch): Promise<ProfileResult> {
+  try {
+    const resp = await fetch(`${getApiUrl()}/community/profile`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+    if (!resp.ok) return { ok: false, error: await readError(resp) }
+    return { ok: true, data: (await resp.json()) as CommunityProfile }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : 'network error' }
   }
