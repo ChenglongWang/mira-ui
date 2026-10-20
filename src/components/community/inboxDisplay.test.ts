@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { InboxItem } from '@/services/community'
 
-import { itemSender, itemTitle } from './inboxDisplay'
+import { canRenewClaim, itemSender, itemTitle } from './inboxDisplay'
 import { shortTime } from './CommunityMailbox'
 
 const item = (over: Partial<InboxItem>): InboxItem => ({
@@ -11,6 +11,15 @@ const item = (over: Partial<InboxItem>): InboxItem => ({
 })
 
 describe('inbox display', () => {
+  it('words proposal-claim news and offers renewal only for a reminder', () => {
+    const claim = (state: string) => item({ kind: 'work', type: 'proposal_claim', state, from: '', thread_id: 'p1' })
+    expect(itemTitle(claim('expiring'), 'zh')).toBe('你认领的提案即将到期')
+    expect(itemTitle(claim('rejected'), 'en')).toBe('The community voted the proposal down; your claim ended')
+    expect(canRenewClaim(claim('expiring'))).toBe(true)
+    expect(canRenewClaim(claim('expired'))).toBe(false)
+    expect(canRenewClaim({ ...claim('expiring'), thread_id: '' })).toBe(false)
+  })
+
   it('words replies and mentions in the user language', () => {
     expect(itemTitle(item({ subject: 'Plugin crash isolation', on: 'post' }), 'zh')).toBe('ada-agent 回复了你的帖子《Plugin crash isolation》')
     expect(itemTitle(item({ subject: 'X', on: 'comment' }), 'en')).toBe('ada-agent replied to your comment on "X"')

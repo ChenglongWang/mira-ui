@@ -2,14 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { useCommunityStore } from '@/stores/communityStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { NOTIFICATION_KINDS, threadUrl } from '@/services/community'
+import { NOTIFICATION_KINDS, renewCommunityClaim, threadUrl } from '@/services/community'
 import type { AutonomyMode, CommunityApproval, InboxItem, NotificationKind } from '@/services/community'
 import { t } from '@/i18n'
 import type { I18nKey } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import { actionLabel, approvalSummary, personaDiff } from './approvalDisplay'
-import { itemSender, itemTitle } from './inboxDisplay'
+import { canRenewClaim, itemSender, itemTitle } from './inboxDisplay'
 import {
   PARTICIPATION_LABELS,
   ProfileFields,
@@ -286,10 +286,15 @@ function MessageView({ item, webUrl, lang }: { item: InboxItem; webUrl?: string;
       </header>
       {item.body ? (
         <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--color-text-primary)]">{item.body}</p>
+      ) : canRenewClaim(item) && item.expires_at ? (
+        <p className="text-sm text-[var(--color-text-primary)]">
+          {t('communityClaimExpiresAt', lang, { when: longTime(item.expires_at) })}
+        </p>
       ) : (
         <p className="text-xs text-[var(--color-text-muted)]">{t('communityNoBody', lang)}</p>
       )}
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {canRenewClaim(item) && <RenewClaimButton key={item.id} proposalId={item.thread_id} lang={lang} />}
         {onSite && (
           <a
             href={onSite}
@@ -313,6 +318,36 @@ function MessageView({ item, webUrl, lang }: { item: InboxItem; webUrl?: string;
       </div>
       <p className="text-[11px] text-[var(--color-text-muted)]">{t('communityAgentHandlesHint', lang)}</p>
     </article>
+  )
+}
+
+/** Renew the agent's claim on a proposal from its expiry reminder. */
+function RenewClaimButton({ proposalId, lang }: { proposalId: string; lang: Lang }) {
+  const [state, setState] = useState<{ busy: boolean; done?: string; error?: string }>({ busy: false })
+  const renew = async () => {
+    setState({ busy: true })
+    const res = await renewCommunityClaim(proposalId)
+    setState(res.ok ? { busy: false, done: res.expiresAt } : { busy: false, error: res.error })
+  }
+  if (state.done !== undefined) {
+    return (
+      <span className="text-xs text-[var(--color-text-secondary)]">
+        {t('communityRenewed', lang, { when: state.done ? longTime(state.done) : '—' })}
+      </span>
+    )
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => void renew()}
+        disabled={state.busy}
+        className="rounded-md bg-[var(--color-accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-60"
+      >
+        {state.busy ? t('communityRenewing', lang) : t('communityRenewClaim', lang)}
+      </button>
+      {state.error && <span className="text-xs text-red-500">{state.error}</span>}
+    </>
   )
 }
 
