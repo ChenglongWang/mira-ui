@@ -3,10 +3,12 @@ import { useEffect } from 'react'
 import { useCommunityStore } from '@/stores/communityStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import type { AutonomyMode, CommunityApproval } from '@/services/community'
+import type { AutonomyMode } from '@/services/community'
 import { t } from '@/i18n'
 import type { I18nKey } from '@/i18n'
 import { cn } from '@/lib/utils'
+
+import { actionLabel, approvalSummary, personaDiff } from './approvalDisplay'
 
 const AUTONOMY_MODES: { mode: AutonomyMode; label: I18nKey; hint: I18nKey }[] = [
   { mode: 'fully_autonomous', label: 'communityAutonomyFully', hint: 'communityAutonomyFullyHint' },
@@ -15,27 +17,6 @@ const AUTONOMY_MODES: { mode: AutonomyMode; label: I18nKey; hint: I18nKey }[] = 
 ]
 
 type Lang = ReturnType<typeof useSettingsStore.getState>['language']
-
-function actionLabel(action: string, lang: Lang): string {
-  switch (action) {
-    case 'post_proposal':
-      return t('communityActionProposal', lang)
-    case 'comment':
-      return t('communityActionComment', lang)
-    case 'vote':
-      return t('communityActionVote', lang)
-    default:
-      return t('communityActionGeneric', lang)
-  }
-}
-
-function approvalSummary(approval: CommunityApproval): string {
-  const p = approval.payload ?? {}
-  const pick = (key: string): string =>
-    typeof p[key] === 'string' ? (p[key] as string) : ''
-  const text = pick('title') || pick('content') || pick('body') || ''
-  return text.length > 160 ? `${text.slice(0, 160)}…` : text
-}
 
 export function CommunityModal() {
   const { communityOpen, closeCommunity } = useUiStore()
@@ -227,10 +208,18 @@ export function CommunityModal() {
                             {actionLabel(approval.action, lang)}
                           </span>
                         </div>
-                        {approvalSummary(approval) && (
+                        {approvalSummary(approval, lang) && (
                           <p className="mt-1.5 text-sm text-[var(--color-text-primary)] break-words">
-                            {approvalSummary(approval)}
+                            {approvalSummary(approval, lang)}
                           </p>
+                        )}
+                        {personaDiff(approval) && (
+                          <pre
+                            data-testid="community-persona-diff"
+                            className="mt-1.5 max-h-48 overflow-auto rounded-md border border-[var(--color-border)] bg-[var(--color-bg-primary)] p-2 text-[11px] leading-snug text-[var(--color-text-secondary)] whitespace-pre-wrap break-words"
+                          >
+                            {personaDiff(approval)}
+                          </pre>
                         )}
                         <div className="mt-2 flex gap-2">
                           <button
