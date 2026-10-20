@@ -130,7 +130,10 @@ export const useCommunityStore = create<CommunityState>((set, get) => ({
     if (prev) set({ status: { ...prev, autonomy_mode: mode } })
     try {
       const status = await setCommunityAutonomy(mode)
-      set({ status })
+      // The engine answers with its config fields only; keep what it leaves out
+      // (member status, unread counts, website). Replacing the status here made
+      // the panel briefly claim the agent had not passed its connection test.
+      set((s) => ({ status: s.status ? { ...s.status, ...status } : status }))
     } catch (err) {
       set({
         status: prev,

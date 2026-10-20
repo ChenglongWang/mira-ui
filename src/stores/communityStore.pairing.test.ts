@@ -21,6 +21,7 @@ import {
   fetchCommunityStatus,
   markCommunityInboxRead,
   pollCommunityPairing,
+  setCommunityAutonomy,
   setCommunityNotifications,
   startCommunityPairing,
 } from '@/services/community'
@@ -118,5 +119,22 @@ describe('community inbox actions', () => {
     await useCommunityStore.getState().refresh()
     expect(useCommunityStore.getState().inbox.map((i) => i.id)).toEqual(['z'])
     expect(useCommunityStore.getState().status?.unread?.total).toBe(1)
+  })
+})
+
+describe('switching the autonomy mode', () => {
+  afterEach(() => vi.clearAllMocks())
+
+  it('keeps what the engine leaves out of its answer (no false "connection test" banner)', async () => {
+    useCommunityStore.setState({ status: { ...status(true), member_status: 'active', web_url: 'http://web', pending_count: 2 } })
+    // The engine's autonomy endpoint returns only its config fields.
+    const { member_status: _m, web_url: _w, unread: _u, pending_count: _p, ...configOnly } = status(true)
+    vi.mocked(setCommunityAutonomy).mockResolvedValue({ ...configOnly, autonomy_mode: 'fully_autonomous' } as never)
+    await useCommunityStore.getState().setAutonomy('fully_autonomous')
+    const s = useCommunityStore.getState().status
+    expect(s?.autonomy_mode).toBe('fully_autonomous')
+    expect(s?.member_status).toBe('active')
+    expect(s?.web_url).toBe('http://web')
+    expect(s?.pending_count).toBe(2)
   })
 })

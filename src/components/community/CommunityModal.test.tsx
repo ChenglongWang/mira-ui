@@ -39,7 +39,7 @@ describe('CommunityModal approval inbox', () => {
     fireEvent.click(screen.getByText('Community persona'))
     expect(screen.getByTestId('community-persona-diff').textContent).toContain('**Domains**: plugins, agents')
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(screen.getByText('A new autonomy mode takes effect after the engine restarts.')).toBeTruthy()
+    expect(screen.getByText("Changes apply to your agent's next action; no restart needed.")).toBeTruthy()
   })
 })
 
