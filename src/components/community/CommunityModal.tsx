@@ -1,9 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 
 import { useCommunityStore } from '@/stores/communityStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
-import type { AutonomyMode } from '@/services/community'
+import { PARTICIPATION, splitList } from '@/services/community'
+import type { AutonomyMode, Participation, PublicProfileInput } from '@/services/community'
 import { t } from '@/i18n'
 import type { I18nKey } from '@/i18n'
 import { cn } from '@/lib/utils'
@@ -93,7 +94,8 @@ export function CommunityModal() {
               lang={lang}
               loading={loading}
               pairing={pairing}
-              onJoin={() => void startPairing()}
+              initialDomains={status?.domains ?? []}
+              onJoin={(profile) => void startPairing(profile)}
               onCancel={cancelPairing}
             />
           ) : (
@@ -296,35 +298,129 @@ function MemberBadge({
   )
 }
 
+const PARTICIPATION_LABELS: Record<Participation, I18nKey> = {
+  answer: 'communityParticipationAnswer',
+  review: 'communityParticipationReview',
+  develop: 'communityParticipationDevelop',
+  discuss: 'communityParticipationDiscuss',
+}
+
+const BIO_MAX = 500
+
+/** The public profile, from the join form's raw values. Empty fields are left out. */
+export function buildPublicProfile(form: {
+  domains: string
+  techStack: string
+  languages: string
+  participation: Participation[]
+  bio: string
+}): PublicProfileInput {
+  const profile: PublicProfileInput = { participation: form.participation }
+  const domains = splitList(form.domains)
+  const techStack = splitList(form.techStack)
+  const languages = splitList(form.languages)
+  if (domains.length) profile.domains = domains
+  if (techStack.length) profile.tech_stack = techStack
+  if (languages.length) profile.languages = languages
+  if (form.bio.trim()) profile.bio = form.bio.trim()
+  return profile
+}
+
+const fieldClass =
+  'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-bg-primary)] px-2.5 py-1.5 text-sm text-[var(--color-text-primary)] focus:border-[var(--color-accent)] focus:outline-none'
+
 function JoinSection({
   lang,
   loading,
   pairing,
+  initialDomains,
   onJoin,
   onCancel,
 }: {
   lang: Lang
   loading: boolean
   pairing: ReturnType<typeof useCommunityStore.getState>['pairing']
-  onJoin: () => void
+  initialDomains: string[]
+  onJoin: (profile: PublicProfileInput) => void
   onCancel: () => void
 }) {
+  const [domains, setDomains] = useState(initialDomains.join(', '))
+  const [techStack, setTechStack] = useState('')
+  const [languages, setLanguages] = useState('')
+  const [participation, setParticipation] = useState<Participation[]>([...PARTICIPATION])
+  const [bio, setBio] = useState('')
+  const toggle = (p: Participation) =>
+    setParticipation((cur) => (cur.includes(p) ? cur.filter((x) => x !== p) : [...cur, p]))
+  const canJoin = !loading && participation.length > 0 && bio.length <= BIO_MAX
+
   return (
-    <section className="space-y-4 py-4 text-center">
-      <div className="space-y-1">
+    <section className="space-y-4 py-4">
+      <div className="space-y-1 text-center">
         <p className="text-sm text-[var(--color-text-secondary)]">{t('communitySubtitle', lang)}</p>
         <p className="text-[11px] text-[var(--color-text-muted)]">{t('communityJoinHint', lang)}</p>
       </div>
 
       {!pairing.active ? (
-        <button
-          type="button"
-          onClick={onJoin}
-          disabled={loading}
-          className="rounded-lg bg-[var(--color-accent)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+        <form
+          aria-label={t('communityProfileTitle', lang)}
+          className="space-y-3 rounded-lg border border-[var(--color-border)] px-4 py-3 text-left"
+          onSubmit={(e) => {
+            e.preventDefault()
+            if (canJoin) onJoin(buildPublicProfile({ domains, techStack, languages, participation, bio }))
+          }}
         >
-          {t('communityJoin', lang)}
-        </button>
+          <div className="space-y-0.5">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--color-text-secondary)]">
+              {t('communityProfileTitle', lang)}
+            </h3>
+            <p className="text-[11px] text-[var(--color-text-muted)]">{t('communityProfileHint', lang)}</p>
+          </div>
+          {([
+            ['communityProfileDomains', domains, setDomains, 'plugins, agents'],
+            ['communityProfileTech', techStack, setTechStack, 'python, react'],
+            ['communityProfileLanguages', languages, setLanguages, 'en, zh'],
+          ] as [I18nKey, string, (v: string) => void, string][]).map(([label, value, setValue, placeholder]) => (
+            <label key={label} className="block space-y-1">
+              <span className="text-xs text-[var(--color-text-secondary)]">
+                {t(label, lang)} <span className="text-[var(--color-text-muted)]">· {t('communityProfileListHint', lang)}</span>
+              </span>
+              <input value={value} placeholder={placeholder} onChange={(e) => setValue(e.target.value)} className={fieldClass} />
+            </label>
+          ))}
+          <fieldset className="space-y-1">
+            <legend className="text-xs text-[var(--color-text-secondary)]">{t('communityProfileParticipation', lang)}</legend>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {PARTICIPATION.map((p) => (
+                <label key={p} className="flex items-center gap-1.5 text-sm text-[var(--color-text-primary)]">
+                  <input type="checkbox" checked={participation.includes(p)} onChange={() => toggle(p)} />
+                  {t(PARTICIPATION_LABELS[p], lang)}
+                </label>
+              ))}
+            </div>
+            {participation.length === 0 && (
+              <p className="text-[11px] text-amber-300">{t('communityProfileParticipationRequired', lang)}</p>
+            )}
+          </fieldset>
+          <div className="space-y-1">
+            <label className="block space-y-1">
+              <span className="text-xs text-[var(--color-text-secondary)]">{t('communityProfileBio', lang)}</span>
+              <textarea value={bio} rows={2} onChange={(e) => setBio(e.target.value)} className={cn(fieldClass, 'resize-none')} />
+            </label>
+            <span className={cn('block text-right text-[10px]', bio.length > BIO_MAX ? 'text-red-300' : 'text-[var(--color-text-muted)]')}>
+              {bio.length}/{BIO_MAX}
+            </span>
+          </div>
+          {pairing.error && <p className="text-xs text-red-300">{pairing.error}</p>}
+          <div className="text-center">
+            <button
+              type="submit"
+              disabled={!canJoin}
+              className="rounded-lg bg-[var(--color-accent)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {t('communityJoin', lang)}
+            </button>
+          </div>
+        </form>
       ) : (
         <div className="space-y-3">
           <p className="text-sm text-[var(--color-text-primary)]">{t('communityJoining', lang)}</p>

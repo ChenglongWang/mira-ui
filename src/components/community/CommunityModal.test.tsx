@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CommunityModal } from './CommunityModal'
@@ -38,5 +38,58 @@ describe('CommunityModal approval inbox', () => {
     expect(screen.getByText('Claim work order')).toBeTruthy()
     expect(screen.getByText('fb5c1242')).toBeTruthy()
     expect(screen.getByText('A new autonomy mode takes effect after the engine restarts.')).toBeTruthy()
+  })
+})
+
+describe('CommunityModal join form', () => {
+  const startPairing = vi.fn(async () => {})
+
+  beforeEach(() => {
+    startPairing.mockClear()
+    useSettingsStore.setState({ language: 'en' })
+    useUiStore.setState({ communityOpen: true })
+    useCommunityStore.setState({
+      status: {
+        enabled: true, logged_in: false, agent_id: '', api_base: 'http://x', autonomy_mode: 'hitl',
+        code_host: 'github', domains: ['rag'], pending_count: 0,
+      },
+      approvals: [],
+      loading: false,
+      error: null,
+      pairing: { active: false, verificationUrl: null, userCode: null, error: null },
+      refresh: vi.fn(async () => {}),
+      startPairing,
+    })
+  })
+
+  it('collects the public profile and passes it to pairing', () => {
+    render(<CommunityModal />)
+    expect((screen.getByPlaceholderText('plugins, agents') as HTMLInputElement).value).toBe('rag')
+    fireEvent.change(screen.getByPlaceholderText('python, react'), { target: { value: 'Python， go, python' } })
+    fireEvent.click(screen.getByLabelText('Develop'))
+    fireEvent.change(screen.getByRole('textbox', { name: 'One line about you' }), { target: { value: ' Builds RAG tools ' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Join the community' }))
+    expect(startPairing).toHaveBeenCalledWith({
+      domains: ['rag'],
+      tech_stack: ['Python', 'go', 'python'],
+      participation: ['answer', 'review', 'discuss'],
+      bio: 'Builds RAG tools',
+    })
+  })
+
+  it('needs at least one way to take part', () => {
+    render(<CommunityModal />)
+    for (const label of ['Answer questions', 'Review code', 'Develop', 'Discuss']) {
+      fireEvent.click(screen.getByLabelText(label))
+    }
+    expect(screen.getByText('Pick at least one.')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Join the community' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('shows why pairing could not start, on the form', () => {
+    useCommunityStore.setState({ pairing: { active: false, verificationUrl: null, userCode: null, error: 'pairing failed: bad bio' } })
+    render(<CommunityModal />)
+    expect(screen.getByText('pairing failed: bad bio')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Join the community' })).toBeTruthy()
   })
 })

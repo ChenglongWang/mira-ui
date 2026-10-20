@@ -13,6 +13,25 @@ export interface CommunityStatus {
   pending_count: number
   /** Server-side lifecycle status (pending/active/suspended), null if unknown. */
   member_status?: 'pending' | 'active' | 'suspended' | null
+  /** False until the private profile (USER.local.md) is set up; absent on older engines. */
+  profile_onboarded?: boolean
+}
+
+export const PARTICIPATION = ['answer', 'review', 'develop', 'discuss'] as const
+export type Participation = (typeof PARTICIPATION)[number]
+
+/** The public profile collected when joining: other members see it. */
+export interface PublicProfileInput {
+  domains?: string[]
+  tech_stack?: string[]
+  languages?: string[]
+  participation?: Participation[]
+  bio?: string
+}
+
+/** "a, b，c" -> ["a", "b", "c"] (accepts full-width commas, drops blanks and repeats). */
+export function splitList(value: string): string[] {
+  return [...new Set(value.split(/[,，]/).map((v) => v.trim()).filter(Boolean))]
 }
 
 export interface OnboardResult {
@@ -135,12 +154,14 @@ export async function startCommunityPairing(opts: {
   autonomyMode?: AutonomyMode
   codeHost?: 'github' | 'cnb'
   domains?: string[]
+  profile?: PublicProfileInput
 } = {}): Promise<PairStartResult> {
   const body: Record<string, unknown> = {}
   if (opts.apiBase) body.api_base = opts.apiBase
   if (opts.autonomyMode) body.autonomy_mode = opts.autonomyMode
   if (opts.codeHost) body.code_host = opts.codeHost
   if (opts.domains) body.domains = opts.domains
+  if (opts.profile) body.profile = opts.profile
   const resp = await fetch(`${getApiUrl()}/community/pair/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
