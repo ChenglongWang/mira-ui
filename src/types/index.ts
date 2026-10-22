@@ -543,7 +543,7 @@ export interface WsMessage {
 }
 
 export interface WsResponse {
-  type: 'response' | 'progress' | 'tool_call' | 'error' | 'stream_delta' | 'stream_end' | 'stop_ack' | 'skill_fallback_required' | 'skill_loaded' | 'token_usage' | 'turn_started' | 'turn_finished'
+  type: 'response' | 'progress' | 'tool_call' | 'error' | 'stream_delta' | 'stream_reset' | 'stream_end' | 'stop_ack' | 'skill_fallback_required' | 'skill_loaded' | 'token_usage' | 'turn_started' | 'turn_finished'
   session_id?: string
   content: string
   media?: string[]
@@ -636,12 +636,12 @@ export interface ProjectFileInfo {
   is_dir: boolean
 }
 
-/** File row in the explorer; includes project routing for workspace-wide views. */
+/** File row in the explorer: a project file, or a file found by browsing folders. */
 export interface ProjectFileEntry extends ProjectFileInfo {
   projectId: string
   projectLabel?: string
   /** Path relative to the project root (used for API calls). */
   relativePath: string
+  /** Set for files outside a project (Quick Chat folders); served by the engine's fs endpoint. */
+  absolutePath?: string
 }
-
-export type FileExplorerScope = 'all' | 'project'

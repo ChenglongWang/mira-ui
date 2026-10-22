@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useProjectStore } from '@/stores/projectStore'
+import { useShallow } from 'zustand/react/shallow'
 import { useChatStore } from '@/stores/chatStore'
 import { useUiStore } from '@/stores/uiStore'
 import { useSettingsStore } from '@/stores/settingsStore'
@@ -8,6 +9,7 @@ import type { Stats } from '@/types'
 import { QueueItem } from './QueueItem'
 import { CreateProjectDialog } from '@/components/project/CreateProjectDialog'
 import { ChatItem } from './ChatItem'
+import { DeleteChatsDialog } from './DeleteChatsDialog'
 import { FolderRow } from './FolderRow'
 import { cn } from '@/lib/utils'
 import { t } from '@/i18n'
@@ -27,7 +29,7 @@ export function ProjectQueue() {
     deleteTask,
     duplicateTask,
     stats,
-  } = useProjectStore()
+  } = useProjectStore(useShallow((s) => ({ tasks: s.tasks, appMode: s.appMode, selectedTaskId: s.selectedTaskId, setAppMode: s.setAppMode, selectTask: s.selectTask, renameTask: s.renameTask, deleteTask: s.deleteTask, duplicateTask: s.duplicateTask, stats: s.stats })))
   const lang = useSettingsStore((s) => s.language)
   const pushSystemMessage = useUiStore((s) => s.pushSystemMessage)
 
@@ -46,7 +48,7 @@ export function ProjectQueue() {
       )
     }
   }
-  const { chats, activeChatId, workspaceKey, createChat, selectChat, renameChat, deleteChats } = useChatStore()
+  const { chats, activeChatId, workspaceKey, createChat, selectChat, renameChat, deleteChats } = useChatStore(useShallow((s) => ({ chats: s.chats, activeChatId: s.activeChatId, workspaceKey: s.workspaceKey, createChat: s.createChat, selectChat: s.selectChat, renameChat: s.renameChat, deleteChats: s.deleteChats })))
   const { folders, assignments, loaded: organizationLoaded, createFolder, renameFolder, deleteFolder, moveItem } = useOrganizationStore()
   const isChatActive = appMode === 'normal'
 
@@ -59,6 +61,7 @@ export function ProjectQueue() {
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
   const [createProjectOpen, setCreateProjectOpen] = useState(false)
   const [selectedChats, setSelectedChats] = useState<Set<string>>(new Set())
+  const [pendingChatDelete, setPendingChatDelete] = useState<string[] | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
   const bulkOperation = useRef(false)
   const selectionAnchor = useRef<string | null>(null)
@@ -197,18 +200,25 @@ export function ProjectQueue() {
   }
 
   const batchTargets = (id?: string) => id && !selectedChats.has(id) ? [id] : [...selectedChats]
-  const runChatBatch = async (ids: string[], action: 'delete' | 'move', folderId: string | null = null) => {
+  // Deletion is confirmed in DeleteChatsDialog, which also asks about the local folders.
+  const confirmChatDelete = (ids: string[]) => {
+    if (bulkOperation.current || ids.length === 0) return
+    setPendingChatDelete(ids)
+  }
+  const runChatBatch = async (
+    ids: string[],
+    action: 'delete' | 'move',
+    folderId: string | null = null,
+    deleteFiles = false,
+  ) => {
     if (bulkOperation.current || ids.length === 0 || (action === 'move' && !organizationLoaded)) return
-    if (action === 'delete' && !window.confirm(lang === 'zh'
-      ? `从会话列表删除所选 ${ids.length} 个会话？这不会删除磁盘上的历史日志。`
-      : `Remove ${ids.length} selected conversations from the list? History files on disk will not be deleted.`)) return
     bulkOperation.current = true
     setBulkBusy(true)
     const scope = workspaceKey
     let failed: string[] = []
     try {
       if (action === 'delete') {
-        failed = (await deleteChats(ids)).failed
+        failed = (await deleteChats(ids, { deleteFiles })).failed
       } else {
         // Sequential moves preserve the store's per-item optimistic rollback.
         for (const id of ids) {
@@ -230,7 +240,7 @@ export function ProjectQueue() {
   }
   const chatProps = (id: string) => ({
     bulkSelected: selectedChats.has(id), disabled: bulkBusy, onSelect: handleSelectChat,
-    onDelete: () => { void runChatBatch(batchTargets(id), 'delete') },
+    onDelete: () => confirmChatDelete(batchTargets(id)),
     onMove: (_id: string, folderId: string | null) => { void runChatBatch(batchTargets(id), 'move', folderId) },
   })
 
@@ -289,6 +299,18 @@ export function ProjectQueue() {
   return (
     <aside className="flex flex-col h-full border-r border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
       {createProjectOpen && <CreateProjectDialog onClose={() => setCreateProjectOpen(false)} />}
+      {pendingChatDelete && (
+        <DeleteChatsDialog
+          count={pendingChatDelete.length}
+          lang={lang}
+          onCancel={() => setPendingChatDelete(null)}
+          onConfirm={(deleteFiles) => {
+            const ids = pendingChatDelete
+            setPendingChatDelete(null)
+            void runChatBatch(ids, 'delete', null, deleteFiles)
+          }}
+        />
+      )}
       {/* Tab bar: Chats | Projects + contextual add */}
       <div className="flex items-stretch border-b border-[var(--color-border)]">
         <TabButton active={showChats} count={chats.length} onClick={handleChatsTab}>
@@ -354,7 +376,7 @@ export function ProjectQueue() {
               <option value={UNCATEGORIZED_ID}>{t('uncategorized', lang)}</option>
               {sortedFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
             </select>
-            <button type="button" disabled={bulkBusy} className="text-red-400 disabled:opacity-50" onClick={() => { void runChatBatch([...selectedChats], 'delete') }}>
+            <button type="button" disabled={bulkBusy} className="text-red-400 disabled:opacity-50" onClick={() => confirmChatDelete([...selectedChats])}>
               {lang === 'zh' ? '删除所选会话' : 'Delete selected conversations'}
             </button>
             {bulkBusy && <span role="status">{lang === 'zh' ? '处理中…' : 'Working…'}</span>}
